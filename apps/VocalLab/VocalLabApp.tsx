@@ -474,17 +474,34 @@ export const VocalLabApp: React.FC = () => {
       setConversionProgress(0);
       
       try {
-        const midiFile = await Mp3ToMidiConverter.convert(file, setConversionProgress);
-        await SessionRepository.saveMidiFile(midiFile);
+        const midiFile = await Mp3ToMidiConverter.convert(file, (progress) => {
+          setConversionProgress(progress);
+        });
+        
+        if (!midiFile.data.notes || midiFile.data.notes.length === 0) {
+          setIsConverting(false);
+          setConversionProgress(0);
+          alert('No notes detected. Try a clearer audio file with a single melody (piano solo, vocal, etc.).');
+          return;
+        }
+        
+        // Add to local state immediately for UI responsiveness
         setMidiFiles(prev => [...prev, midiFile]);
         setShowMp3Converter(false);
-        alert(`Conversion complete! "${midiFile.name}" added to MIDI library with ${midiFile.data.notes.length} notes.`);
-      } catch (error) {
-        console.error('MP3 to MIDI conversion failed:', error);
-        alert('Failed to convert MP3 to MIDI. Try a clearer audio file with a single melody.');
-      } finally {
         setIsConverting(false);
         setConversionProgress(0);
+        
+        // Save to DB in background (non-blocking)
+        SessionRepository.saveMidiFile(midiFile).catch(err => {
+          console.warn('Failed to save MIDI to DB:', err);
+        });
+        
+        alert(`Conversion complete! "${midiFile.name}" added to MIDI library with ${midiFile.data.notes.length} notes detected.`);
+      } catch (error) {
+        console.error('MP3 to MIDI conversion failed:', error);
+        setIsConverting(false);
+        setConversionProgress(0);
+        alert('Failed to convert audio to MIDI. Try a clearer audio file with a single melody.');
       }
     }
     if (mp3FileInputRef.current) mp3FileInputRef.current.value = '';

@@ -49,6 +49,10 @@ class SessionService {
         Logger.log('error', 'SessionRepository: IndexedDB init failed', {}, (event.target as any).error);
         reject((event.target as any).error);
       };
+      
+      request.onblocked = () => {
+        Logger.log('warn', 'SessionRepository: IndexedDB blocked - close other tabs');
+      };
     });
 
     return this.dbPromise;
@@ -125,6 +129,7 @@ class SessionService {
         resolve();
       };
       request.onerror = () => reject(request.error);
+      transaction.onerror = () => reject(transaction.error);
     });
   }
 

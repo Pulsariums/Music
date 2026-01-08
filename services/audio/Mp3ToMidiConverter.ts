@@ -2,6 +2,8 @@
  * MP3 to MIDI Converter
  * Uses pitch detection (autocorrelation) to convert audio to MIDI notes.
  * This is a simplified approach that works best with monophonic melodies.
+ * 
+ * Optimized for browser performance with chunked processing.
  */
 
 import { SavedMidiFile } from '../../types';
@@ -22,26 +24,36 @@ export class Mp3ToMidiConverter {
   private static readonly SAMPLE_RATE = 44100;
   private static readonly MIN_FREQUENCY = 65.41; // C2
   private static readonly MAX_FREQUENCY = 2093.0; // C7
-  private static readonly MIN_CONFIDENCE = 0.9;
+  private static readonly MIN_CONFIDENCE = 0.8; // Lowered for better detection
   private static readonly FRAME_SIZE = 2048;
-  private static readonly HOP_SIZE = 512;
+  private static readonly HOP_SIZE = 1024; // Increased for faster processing
+  private static readonly FRAMES_PER_CHUNK = 50; // Process in smaller chunks to avoid UI freeze
   
   /**
    * Convert an MP3 file to MIDI
    */
   static async convert(file: File, onProgress?: (progress: number) => void): Promise<SavedMidiFile> {
+    if (onProgress) onProgress(5);
+    
     const audioContext = new AudioContext({ sampleRate: this.SAMPLE_RATE });
     
     try {
       // Decode audio file
+      if (onProgress) onProgress(10);
       const arrayBuffer = await file.arrayBuffer();
+      
+      if (onProgress) onProgress(15);
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      if (onProgress) onProgress(20);
       
       // Get mono audio data
       const audioData = this.getMono(audioBuffer);
       
-      // Detect pitches
-      const notes = await this.detectNotes(audioData, onProgress);
+      // Detect pitches with chunked processing
+      const notes = await this.detectNotesChunked(audioData, onProgress);
+      
+      if (onProgress) onProgress(95);
       
       // Convert to MIDI format
       const midiData = this.notesToMidi(notes, audioBuffer.duration);
@@ -54,6 +66,8 @@ export class Mp3ToMidiConverter {
         duration: audioBuffer.duration * 1000,
         createdAt: Date.now()
       };
+      
+      if (onProgress) onProgress(100);
       
       return midiFile;
     } finally {
@@ -81,9 +95,16 @@ export class Mp3ToMidiConverter {
   }
   
   /**
-   * Detect notes from audio data
+   * Utility to yield to the main thread
    */
-  private static async detectNotes(
+  private static async yieldToMainThread(): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, 0));
+  }
+  
+  /**
+   * Detect notes from audio data with chunked processing to avoid UI freeze
+   */
+  private static async detectNotesChunked(
     audioData: Float32Array,
     onProgress?: (progress: number) => void
   ): Promise<DetectedNote[]> {
@@ -93,8 +114,9 @@ export class Mp3ToMidiConverter {
     let currentNote: DetectedNote | null = null;
     let lastMidiNote = -1;
     let silenceCount = 0;
-    const MAX_SILENCE = 3; // Allow small gaps
+    const MAX_SILENCE = 3;
     
+    // Process in chunks to avoid blocking UI
     for (let frame = 0; frame < totalFrames; frame++) {
       const startSample = frame * this.HOP_SIZE;
       const frameData = audioData.slice(startSample, startSample + this.FRAME_SIZE);
@@ -103,9 +125,14 @@ export class Mp3ToMidiConverter {
       const rms = this.calculateRMS(frameData);
       const time = startSample / this.SAMPLE_RATE;
       
-      // Report progress
-      if (onProgress && frame % 100 === 0) {
-        onProgress(Math.round((frame / totalFrames) * 100));
+      // Yield to main thread every FRAMES_PER_CHUNK frames
+      if (frame % this.FRAMES_PER_CHUNK === 0) {
+        await this.yieldToMainThread();
+        if (onProgress) {
+          // Progress from 20% to 90%
+          const progressPct = 20 + Math.round((frame / totalFrames) * 70);
+          onProgress(progressPct);
+        }
       }
       
       // Skip if too quiet
@@ -113,7 +140,7 @@ export class Mp3ToMidiConverter {
         silenceCount++;
         if (currentNote && silenceCount > MAX_SILENCE) {
           currentNote.duration = time - currentNote.startTime;
-          if (currentNote.duration > 0.05) { // Minimum note duration 50ms
+          if (currentNote.duration > 0.05) {
             notes.push(currentNote);
           }
           currentNote = null;
@@ -166,8 +193,6 @@ export class Mp3ToMidiConverter {
         notes.push(currentNote);
       }
     }
-    
-    if (onProgress) onProgress(100);
     
     return this.cleanupNotes(notes);
   }
