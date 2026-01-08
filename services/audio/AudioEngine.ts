@@ -87,15 +87,27 @@ class FMAudioCore {
   }
 
   // --- RECORDING ---
-  public startRecording() {
-    if (!this.mediaDest) return;
+  public async startRecording() {
+    // Ensure audio context is initialized
+    if (!this.ctx || !this.mediaDest) {
+      await this.init();
+    }
+    if (!this.mediaDest) {
+      Logger.log('error', 'Recording failed: mediaDest not available');
+      return;
+    }
     this.recordingChunks = [];
     const mimeType = 'audio/webm;codecs=opus';
-    this.mediaRecorder = new MediaRecorder(this.mediaDest.stream, { mimeType });
-    this.mediaRecorder.ondataavailable = (evt) => {
-       if (evt.data.size > 0) this.recordingChunks.push(evt.data);
-    };
-    this.mediaRecorder.start();
+    try {
+      this.mediaRecorder = new MediaRecorder(this.mediaDest.stream, { mimeType });
+      this.mediaRecorder.ondataavailable = (evt) => {
+         if (evt.data.size > 0) this.recordingChunks.push(evt.data);
+      };
+      this.mediaRecorder.start();
+      Logger.log('info', 'Recording started');
+    } catch (e: any) {
+      Logger.log('error', 'Failed to start recording', { error: e.message });
+    }
   }
 
   public async stopRecording(): Promise<Blob | null> {

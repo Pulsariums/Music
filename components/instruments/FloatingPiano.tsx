@@ -409,7 +409,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
   return (
       <div 
-        className="absolute rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-white/10 bg-[#1e2029]/95 backdrop-blur-2xl transition-shadow duration-200"
+        className="absolute rounded-2xl shadow-2xl flex flex-col border border-white/10 bg-[#1e2029]/95 backdrop-blur-2xl transition-shadow duration-200"
         style={{
             transform: `translate(${position.x}px, ${position.y}px)`,
             width: size.width,
@@ -465,7 +465,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         </div>
 
         {/* CONTENT: KEYBOARD */}
-        <div className="flex-1 relative bg-black/40 group/keyboard">
+        <div className="flex-1 relative bg-black/40 group/keyboard overflow-hidden rounded-b-2xl">
             
             {/* FALLING NOTES CANVAS - Overlays the keyboard */}
             {isPlayingMidi && currentMidi && (
@@ -553,13 +553,13 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <div className="w-2 h-2 border-r-2 border-b-2 border-zinc-500"></div>
         </div>
 
-        {/* POPUP MENUS - render in portal-like fixed position */}
+        {/* POPUP MENUS - render as absolute within piano container */}
         {showPresetMenu && (
             <div 
-              className="fixed w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl flex flex-col max-h-[300px] no-drag"
+              className="absolute w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl flex flex-col max-h-[300px] no-drag"
               style={{ 
-                top: position.y + 50,
-                left: position.x + 8,
+                top: 50,
+                left: 8,
                 zIndex: 99999
               }}
             >
@@ -581,10 +581,10 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
         {showSettings && (
              <div 
-               className="fixed w-56 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 space-y-4 no-drag"
+               className="absolute w-56 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 space-y-4 no-drag"
                style={{ 
-                 top: position.y + 50,
-                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 8 : 8,
+                 top: 50,
+                 right: 8,
                  zIndex: 99999
                }}
              >
@@ -612,10 +612,10 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
         {showVolume && (
              <div 
-               className="fixed w-48 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 no-drag"
+               className="absolute w-48 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 no-drag"
                style={{ 
-                 top: position.y + 50,
-                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 48 : 48,
+                 top: 50,
+                 right: 48,
                  zIndex: 99999
                }}
              >
@@ -641,10 +641,10 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         {/* MIDI FILES MENU */}
         {showMidiMenu && (
              <div 
-               className="fixed w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl no-drag max-h-96 overflow-hidden flex flex-col"
+               className="absolute w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl no-drag max-h-96 overflow-hidden flex flex-col"
                style={{ 
-                 top: position.y + 50,
-                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 80 : 80,
+                 top: 50,
+                 right: 80,
                  zIndex: 99999
                }}
              >

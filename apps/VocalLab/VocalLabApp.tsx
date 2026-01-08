@@ -149,7 +149,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
           }
       } else {
           // START
-          AudioEngine.startRecording();
+          await AudioEngine.startRecording();
           setIsRecording(true);
       }
   };
