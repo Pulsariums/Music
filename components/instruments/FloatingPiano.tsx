@@ -59,6 +59,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   // MIDI Playback State
   const [isPlayingMidi, setIsPlayingMidi] = useState(false);
   const [currentMidi, setCurrentMidi] = useState<SongSequence | null>(null);
+  const [midiTempo, setMidiTempo] = useState(100); // Playback speed percentage (100% = normal)
   const midiTimeoutRefs = useRef<number[]>([]);
 
   // Refs for interactions
@@ -184,23 +185,24 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     
     const startTime = Date.now();
     const pan = getPanPosition();
+    const tempoMultiplier = 100 / midiTempo; // 100% = 1x, 50% = 2x slower, 200% = 0.5x faster
     
     sequence.events.forEach(event => {
-      // Schedule note on
+      // Schedule note on (adjusted by tempo)
       const noteOnTimeout = window.setTimeout(() => {
         const freq = noteToFreq(event.noteName);
         if (freq) {
           onPlayNote(event.noteName, freq, activePreset, transpose, pan);
         }
-      }, event.startTime * 1000);
+      }, event.startTime * 1000 * tempoMultiplier);
       
-      // Schedule note off
+      // Schedule note off (adjusted by tempo)
       const noteOffTimeout = window.setTimeout(() => {
         const freq = noteToFreq(event.noteName);
         if (freq) {
           onStopNote(event.noteName, freq, transpose);
         }
-      }, (event.startTime + event.duration) * 1000);
+      }, (event.startTime + event.duration) * 1000 * tempoMultiplier);
       
       midiTimeoutRefs.current.push(noteOnTimeout, noteOffTimeout);
     });
@@ -210,7 +212,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     const endTimeout = window.setTimeout(() => {
       setIsPlayingMidi(false);
       setCurrentMidi(null);
-    }, maxTime * 1000 + 100);
+    }, maxTime * 1000 * tempoMultiplier + 100);
     midiTimeoutRefs.current.push(endTimeout);
   };
   
@@ -429,7 +431,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
         {/* MIDI FILES MENU */}
         {showMidiMenu && (
-             <div className="absolute top-10 right-20 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] no-drag max-h-80 overflow-hidden flex flex-col">
+             <div className="absolute top-10 right-20 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] no-drag max-h-96 overflow-hidden flex flex-col">
                  <div className="flex items-center justify-between p-3 border-b border-white/10">
                     <span className="text-xs font-bold text-zinc-400 uppercase">MIDI Files</span>
                     {isPlayingMidi && (
@@ -437,6 +439,27 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                             Stop
                         </button>
                     )}
+                 </div>
+                 
+                 {/* Tempo Control */}
+                 <div className="px-3 py-2 border-b border-white/5 bg-zinc-900/50">
+                    <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+                        <span>Playback Speed</span>
+                        <span className="text-indigo-400 font-medium">{midiTempo}%</span>
+                    </div>
+                    <input 
+                        type="range" 
+                        min="25" 
+                        max="200" 
+                        value={midiTempo} 
+                        onChange={(e) => setMidiTempo(Number(e.target.value))} 
+                        className="w-full h-1 bg-zinc-700 rounded-full appearance-none cursor-pointer accent-indigo-500"
+                    />
+                    <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
+                        <span>Slow</span>
+                        <button onClick={() => setMidiTempo(100)} className="text-indigo-400 hover:underline">Reset</button>
+                        <span>Fast</span>
+                    </div>
                  </div>
                  
                  <div className="flex-1 overflow-y-auto p-2 space-y-1">

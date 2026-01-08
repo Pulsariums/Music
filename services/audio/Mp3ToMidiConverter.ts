@@ -22,12 +22,13 @@ interface PitchResult {
 
 export class Mp3ToMidiConverter {
   private static readonly SAMPLE_RATE = 44100;
-  private static readonly MIN_FREQUENCY = 65.41; // C2
+  private static readonly MIN_FREQUENCY = 55.0; // A1 - lower range for bass
   private static readonly MAX_FREQUENCY = 2093.0; // C7
-  private static readonly MIN_CONFIDENCE = 0.8; // Lowered for better detection
-  private static readonly FRAME_SIZE = 2048;
-  private static readonly HOP_SIZE = 1024; // Increased for faster processing
-  private static readonly FRAMES_PER_CHUNK = 50; // Process in smaller chunks to avoid UI freeze
+  private static readonly MIN_CONFIDENCE = 0.6; // Lowered significantly for better detection
+  private static readonly FRAME_SIZE = 4096; // Larger frame for better low freq detection
+  private static readonly HOP_SIZE = 512; // Smaller hop for better time resolution
+  private static readonly FRAMES_PER_CHUNK = 100; // Process in chunks to avoid UI freeze
+  private static readonly MIN_RMS = 0.005; // Lower threshold for quieter passages
   
   /**
    * Convert an MP3 file to MIDI
@@ -142,11 +143,11 @@ export class Mp3ToMidiConverter {
       }
       
       // Skip if too quiet
-      if (rms < 0.01) {
+      if (rms < this.MIN_RMS) {
         silenceCount++;
         if (currentNote && silenceCount > MAX_SILENCE) {
           currentNote.duration = time - currentNote.startTime;
-          if (currentNote.duration > 0.05) {
+          if (currentNote.duration > 0.03) { // Reduced minimum duration
             notes.push(currentNote);
           }
           currentNote = null;

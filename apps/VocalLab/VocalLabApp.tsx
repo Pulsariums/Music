@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AudioEngine } from '../../services/audio/AudioEngine';
 import { PRESETS } from '../../services/audio/presets';
-import { InstrumentPreset, AudioRecording, SongSequence, WorkspaceItem, SavedMidiFile, WorkspaceSession } from '../../types';
+import { InstrumentPreset, AudioRecording, SongSequence, WorkspaceItem, SavedMidiFile, WorkspaceSession, AppID } from '../../types';
 import { Logger } from '../../lib/logger';
 import { RecordingRepository } from '../../services/data/RecordingRepository';
 import { SessionRepository } from '../../services/data/SessionRepository';
@@ -9,7 +9,11 @@ import { SimpleMidiParser } from '../../services/midi/SimpleMidiParser';
 import { Mp3ToMidiConverter } from '../../services/audio/Mp3ToMidiConverter';
 import { FloatingPiano } from '../../components/instruments/FloatingPiano';
 
-export const VocalLabApp: React.FC = () => {
+interface VocalLabAppProps {
+  onNavigate?: (app: AppID) => void;
+}
+
+export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   // --- WORKSPACE STATE ---
   const [items, setItems] = useState<WorkspaceItem[]>([]);
   const [activeNotes, setActiveNotes] = useState<Set<string>>(new Set());
@@ -624,6 +628,17 @@ export const VocalLabApp: React.FC = () => {
             >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
             </button>
+
+            {/* MIDI Editor */}
+            {onNavigate && (
+                <button 
+                    onClick={() => onNavigate(AppID.MIDI_EDITOR)}
+                    className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-white/10 text-zinc-400"
+                    title="MIDI Editor"
+                >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                </button>
+            )}
 
         </div>
 

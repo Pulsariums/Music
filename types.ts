@@ -5,6 +5,7 @@ export enum AppID {
   DASHBOARD = 'dashboard',
   LYRICAL_MASTER = 'lyrical_master',
   VOCAL_LAB = 'vocal_lab',
+  MIDI_EDITOR = 'midi_editor',
   SETTINGS = 'settings'
 }
 
