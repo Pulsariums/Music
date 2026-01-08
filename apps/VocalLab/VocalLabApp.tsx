@@ -337,31 +337,58 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
 
   // --- GENERIC HANDLERS ---
+  
+  // Shared MIDI file processing logic
+  const processMidiFile = async (file: File, source: string): Promise<boolean> => {
+    Logger.log('info', `Processing MIDI file (${source})`, { name: file.name, size: file.size, type: file.type });
+    
+    // Validate file extension
+    const fileName = file.name.toLowerCase();
+    if (!fileName.endsWith('.mid') && !fileName.endsWith('.midi')) {
+        alert('Please select a valid MIDI file (.mid or .midi)');
+        return false;
+    }
+    
+    try {
+        const seq = await SimpleMidiParser.parse(file);
+        
+        if (!seq || !seq.events || seq.events.length === 0) {
+            Logger.log('warn', `MIDI file parsed but no notes found (${source})`);
+            alert('MIDI file was parsed but no notes were found. Try a different file.');
+            return false;
+        }
+        
+        const midiFile: SavedMidiFile = {
+          id: crypto.randomUUID(),
+          name: file.name.replace('.mid', '').replace('.midi', ''),
+          sequence: seq,
+          createdAt: Date.now()
+        };
+        Logger.log('info', 'Saving MIDI to DB', { id: midiFile.id, name: midiFile.name, eventCount: seq.events.length });
+        await SessionRepository.saveMidiFile(midiFile);
+        await loadMidiFiles();
+        Logger.log('info', 'MIDI file added to library', { name: midiFile.name });
+        alert(`MIDI file "${midiFile.name}" added to library! Open any piano's MIDI menu to play it.`);
+        return true;
+    } catch(err) { 
+        Logger.log('error', `MIDI import failed (${source})`, {}, err as Error);
+        const errorMessage = (err as Error).message || 'Unknown error';
+        alert(`Failed to import MIDI file: ${errorMessage}\n\nPlease check the browser console for details.`); 
+        return false;
+    }
+  };
+  
   // Import MIDI to library (doesn't auto-play)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     Logger.log('info', 'handleFileUpload triggered', { hasFiles: !!e.target.files, fileCount: e.target.files?.length });
-    if (e.target.files && e.target.files[0]) {
-        try {
-            const file = e.target.files[0];
-            Logger.log('info', 'Processing MIDI file', { name: file.name, size: file.size, type: file.type });
-            const seq = await SimpleMidiParser.parse(file);
-            const midiFile: SavedMidiFile = {
-              id: crypto.randomUUID(),
-              name: file.name.replace('.mid', '').replace('.midi', ''),
-              sequence: seq,
-              createdAt: Date.now()
-            };
-            Logger.log('info', 'Saving MIDI to DB', { id: midiFile.id, name: midiFile.name, eventCount: seq.events.length });
-            await SessionRepository.saveMidiFile(midiFile);
-            await loadMidiFiles();
-            Logger.log('info', 'MIDI file added to library', { name: midiFile.name });
-            alert(`MIDI file "${midiFile.name}" added to library! Open any piano's MIDI menu to play it.`);
-        } catch(err) { 
-            Logger.log('error', 'MIDI import failed', {}, err as Error);
-            alert("Failed to import MIDI file: " + (err as Error).message); 
-        }
+    if (!e.target.files || e.target.files.length === 0) {
+        Logger.log('info', 'No file selected or dialog cancelled');
+        return;
     }
-    // Reset input
+    
+    await processMidiFile(e.target.files[0], 'toolbar');
+    
+    // Always reset input to allow re-importing same file
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -379,27 +406,14 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
   const handleMidiImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     Logger.log('info', 'handleMidiImport triggered', { hasFiles: !!e.target.files, fileCount: e.target.files?.length });
-    if (e.target.files && e.target.files[0]) {
-      try {
-        const file = e.target.files[0];
-        Logger.log('info', 'Processing MIDI file (from library modal)', { name: file.name, size: file.size, type: file.type });
-        const seq = await SimpleMidiParser.parse(file);
-        const midiFile: SavedMidiFile = {
-          id: crypto.randomUUID(),
-          name: file.name.replace('.mid', '').replace('.midi', ''),
-          sequence: seq,
-          createdAt: Date.now()
-        };
-        Logger.log('info', 'Saving MIDI to DB', { id: midiFile.id, name: midiFile.name, eventCount: seq.events.length });
-        await SessionRepository.saveMidiFile(midiFile);
-        await loadMidiFiles();
-        Logger.log('info', 'MIDI file imported', { name: midiFile.name });
-      } catch (err) {
-        Logger.log('error', 'MIDI import failed (from library modal)', {}, err as Error);
-        alert("Failed to import MIDI file: " + (err as Error).message);
-      }
+    if (!e.target.files || e.target.files.length === 0) {
+        Logger.log('info', 'No file selected or dialog cancelled (library modal)');
+        return;
     }
-    // Reset input
+    
+    await processMidiFile(e.target.files[0], 'library modal');
+    
+    // Always reset input to allow re-importing same file
     if (midiFileInputRef.current) midiFileInputRef.current.value = '';
   };
 
