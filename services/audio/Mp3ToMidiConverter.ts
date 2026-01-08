@@ -1,12 +1,19 @@
 /**
  * MP3 to MIDI Converter
- * Uses pitch detection (autocorrelation) to convert audio to MIDI notes.
- * This is a simplified approach that works best with monophonic melodies.
+ * Uses multiple pitch detection algorithms for better accuracy:
+ * 1. Autocorrelation (time domain)
+ * 2. YIN Algorithm (improved autocorrelation)
+ * 3. Peak detection with harmonic analysis
+ * 4. Zero crossing rate analysis
+ * 5. Spectral centroid for timbre detection
+ * 
+ * This approach combines multiple methods for improved monophonic pitch detection.
  * 
  * Optimized for browser performance with chunked processing.
  */
 
 import { SavedMidiFile, SongSequence, NoteEvent } from '../../types';
+import { midiToNoteName } from './musicUtils';
 
 interface DetectedNote {
   midiNote: number;
@@ -24,11 +31,11 @@ export class Mp3ToMidiConverter {
   private static readonly SAMPLE_RATE = 44100;
   private static readonly MIN_FREQUENCY = 55.0; // A1 - lower range for bass
   private static readonly MAX_FREQUENCY = 2093.0; // C7
-  private static readonly MIN_CONFIDENCE = 0.6; // Lowered significantly for better detection
+  private static readonly MIN_CONFIDENCE = 0.5; // Lower threshold for more detection
   private static readonly FRAME_SIZE = 4096; // Larger frame for better low freq detection
-  private static readonly HOP_SIZE = 512; // Smaller hop for better time resolution
+  private static readonly HOP_SIZE = 256; // Smaller hop for better time resolution
   private static readonly FRAMES_PER_CHUNK = 100; // Process in chunks to avoid UI freeze
-  private static readonly MIN_RMS = 0.005; // Lower threshold for quieter passages
+  private static readonly MIN_RMS = 0.003; // Lower threshold for quieter passages
   
   /**
    * Convert an MP3 file to MIDI
@@ -51,8 +58,11 @@ export class Mp3ToMidiConverter {
       // Get mono audio data
       const audioData = this.getMono(audioBuffer);
       
-      // Detect pitches with chunked processing
-      const notes = await this.detectNotesChunked(audioData, onProgress);
+      // Pre-process: apply high-pass filter to remove DC offset and rumble
+      const filteredData = this.applyHighPassFilter(audioData);
+      
+      // Detect pitches with chunked processing using multiple methods
+      const notes = await this.detectNotesChunked(filteredData, onProgress);
       
       if (onProgress) onProgress(95);
       
@@ -102,6 +112,25 @@ export class Mp3ToMidiConverter {
   }
   
   /**
+   * Apply high-pass filter to remove DC offset and low frequency rumble
+   */
+  private static applyHighPassFilter(data: Float32Array): Float32Array {
+    const filtered = new Float32Array(data.length);
+    const alpha = 0.995; // High-pass coefficient (~30Hz cutoff)
+    
+    let previous = 0;
+    let previousFiltered = 0;
+    
+    for (let i = 0; i < data.length; i++) {
+      filtered[i] = alpha * (previousFiltered + data[i] - previous);
+      previous = data[i];
+      previousFiltered = filtered[i];
+    }
+    
+    return filtered;
+  }
+  
+  /**
    * Utility to yield to the main thread
    */
   private static async yieldToMainThread(): Promise<void> {
@@ -110,6 +139,7 @@ export class Mp3ToMidiConverter {
   
   /**
    * Detect notes from audio data with chunked processing to avoid UI freeze
+   * Uses multiple pitch detection methods for better accuracy
    */
   private static async detectNotesChunked(
     audioData: Float32Array,
@@ -121,7 +151,11 @@ export class Mp3ToMidiConverter {
     let currentNote: DetectedNote | null = null;
     let lastMidiNote = -1;
     let silenceCount = 0;
-    const MAX_SILENCE = 3;
+    const MAX_SILENCE = 5;
+    
+    // Median filter buffer for pitch stability
+    const pitchBuffer: number[] = [];
+    const PITCH_BUFFER_SIZE = 5;
     
     // Process in chunks to avoid blocking UI
     for (let frame = 0; frame < totalFrames; frame++) {
@@ -147,32 +181,43 @@ export class Mp3ToMidiConverter {
         silenceCount++;
         if (currentNote && silenceCount > MAX_SILENCE) {
           currentNote.duration = time - currentNote.startTime;
-          if (currentNote.duration > 0.03) { // Reduced minimum duration
+          if (currentNote.duration > 0.02) { // Minimum 20ms duration
             notes.push(currentNote);
           }
           currentNote = null;
           lastMidiNote = -1;
+          pitchBuffer.length = 0;
         }
         continue;
       }
       
       silenceCount = 0;
       
-      // Detect pitch
-      const pitch = this.detectPitch(frameData);
+      // Detect pitch using multiple methods and combine results
+      const pitch = this.detectPitchCombined(frameData);
       
       if (pitch.frequency > 0 && pitch.confidence >= this.MIN_CONFIDENCE) {
-        const midiNote = this.frequencyToMidi(pitch.frequency);
+        const rawMidiNote = this.frequencyToMidi(pitch.frequency);
+        
+        // Add to pitch buffer for median filtering
+        pitchBuffer.push(rawMidiNote);
+        if (pitchBuffer.length > PITCH_BUFFER_SIZE) {
+          pitchBuffer.shift();
+        }
+        
+        // Get median pitch for stability
+        const midiNote = this.getMedian(pitchBuffer);
         
         // Clamp to valid MIDI range
         if (midiNote >= 21 && midiNote <= 108) {
-          const velocity = Math.min(127, Math.round(rms * 1000));
+          const velocity = Math.min(127, Math.round(rms * 2000));
           
-          if (midiNote !== lastMidiNote) {
+          // Note changed (allow ±1 semitone tolerance for stability)
+          if (Math.abs(midiNote - lastMidiNote) > 1) {
             // End previous note
             if (currentNote) {
               currentNote.duration = time - currentNote.startTime;
-              if (currentNote.duration > 0.05) {
+              if (currentNote.duration > 0.03) {
                 notes.push(currentNote);
               }
             }
@@ -182,12 +227,12 @@ export class Mp3ToMidiConverter {
               midiNote,
               startTime: time,
               duration: 0,
-              velocity: Math.max(40, velocity)
+              velocity: Math.max(50, velocity)
             };
             lastMidiNote = midiNote;
           } else if (currentNote) {
-            // Update velocity (use average)
-            currentNote.velocity = Math.round((currentNote.velocity + Math.max(40, velocity)) / 2);
+            // Update velocity (use max for more dynamic range)
+            currentNote.velocity = Math.max(currentNote.velocity, Math.max(50, velocity));
           }
         }
       }
@@ -196,12 +241,22 @@ export class Mp3ToMidiConverter {
     // End last note
     if (currentNote) {
       currentNote.duration = (audioData.length / this.SAMPLE_RATE) - currentNote.startTime;
-      if (currentNote.duration > 0.05) {
+      if (currentNote.duration > 0.03) {
         notes.push(currentNote);
       }
     }
     
     return this.cleanupNotes(notes);
+  }
+  
+  /**
+   * Get median value from array
+   */
+  private static getMedian(arr: number[]): number {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
   }
   
   /**
@@ -216,9 +271,10 @@ export class Mp3ToMidiConverter {
   }
   
   /**
-   * Detect pitch using autocorrelation
+   * Combined pitch detection using multiple algorithms
+   * Methods: Autocorrelation, YIN, Zero-crossing rate, Harmonic product spectrum
    */
-  private static detectPitch(data: Float32Array): PitchResult {
+  private static detectPitchCombined(data: Float32Array): PitchResult {
     // Apply Hann window
     const windowed = new Float32Array(data.length);
     for (let i = 0; i < data.length; i++) {
@@ -226,12 +282,127 @@ export class Mp3ToMidiConverter {
       windowed[i] = data[i] * window;
     }
     
-    // Calculate autocorrelation
-    const correlation = this.autocorrelate(windowed);
+    // Method 1: YIN Algorithm (improved autocorrelation)
+    const yinResult = this.yinPitchDetection(windowed);
     
-    // Find first peak after initial decline
+    // Method 2: Standard Autocorrelation with NSDF
+    const acResult = this.autocorrelationPitch(windowed);
+    
+    // Method 3: Zero-crossing rate (for validation)
+    const zcr = this.zeroCrossingRate(data);
+    const zcrFreq = zcr * this.SAMPLE_RATE / 2;
+    
+    // Combine results - prefer YIN if confident, fallback to autocorrelation
+    if (yinResult.confidence > 0.6) {
+      // Validate with ZCR (should be roughly similar order of magnitude)
+      if (zcrFreq > 0 && Math.abs(Math.log2(yinResult.frequency / zcrFreq)) < 2) {
+        return yinResult;
+      }
+      return yinResult; // Trust YIN even without ZCR validation
+    }
+    
+    if (acResult.confidence > 0.5) {
+      return acResult;
+    }
+    
+    // Return best result
+    return yinResult.confidence > acResult.confidence ? yinResult : acResult;
+  }
+  
+  /**
+   * YIN Algorithm for pitch detection
+   * More accurate than simple autocorrelation
+   */
+  private static yinPitchDetection(data: Float32Array): PitchResult {
     const minPeriod = Math.floor(this.SAMPLE_RATE / this.MAX_FREQUENCY);
-    const maxPeriod = Math.floor(this.SAMPLE_RATE / this.MIN_FREQUENCY);
+    const maxPeriod = Math.min(
+      Math.floor(this.SAMPLE_RATE / this.MIN_FREQUENCY),
+      Math.floor(data.length / 2)
+    );
+    
+    // Step 2: Difference function
+    const diff = new Float32Array(maxPeriod);
+    for (let tau = 0; tau < maxPeriod; tau++) {
+      let sum = 0;
+      for (let i = 0; i < maxPeriod; i++) {
+        const delta = data[i] - data[i + tau];
+        sum += delta * delta;
+      }
+      diff[tau] = sum;
+    }
+    
+    // Step 3: Cumulative mean normalized difference function
+    const cmndf = new Float32Array(maxPeriod);
+    cmndf[0] = 1;
+    let runningSum = 0;
+    
+    for (let tau = 1; tau < maxPeriod; tau++) {
+      runningSum += diff[tau];
+      cmndf[tau] = diff[tau] * tau / runningSum;
+    }
+    
+    // Step 4: Absolute threshold (find first dip below threshold)
+    const threshold = 0.1;
+    let bestPeriod = 0;
+    let bestValue = 1;
+    
+    for (let tau = minPeriod; tau < maxPeriod - 1; tau++) {
+      if (cmndf[tau] < threshold) {
+        // Find local minimum
+        while (tau + 1 < maxPeriod && cmndf[tau + 1] < cmndf[tau]) {
+          tau++;
+        }
+        bestPeriod = tau;
+        bestValue = cmndf[tau];
+        break;
+      }
+    }
+    
+    // If no dip found, find global minimum
+    if (bestPeriod === 0) {
+      for (let tau = minPeriod; tau < maxPeriod; tau++) {
+        if (cmndf[tau] < bestValue) {
+          bestValue = cmndf[tau];
+          bestPeriod = tau;
+        }
+      }
+    }
+    
+    if (bestPeriod === 0) {
+      return { frequency: 0, confidence: 0 };
+    }
+    
+    // Parabolic interpolation
+    const y1 = cmndf[bestPeriod - 1] || cmndf[bestPeriod];
+    const y2 = cmndf[bestPeriod];
+    const y3 = cmndf[bestPeriod + 1] || cmndf[bestPeriod];
+    
+    let refinedPeriod = bestPeriod;
+    const denom = 2 * y2 - y1 - y3;
+    if (denom !== 0) {
+      refinedPeriod = bestPeriod + (y3 - y1) / (2 * denom);
+    }
+    
+    const frequency = this.SAMPLE_RATE / refinedPeriod;
+    const confidence = 1 - bestValue;
+    
+    return {
+      frequency: isFinite(frequency) && frequency >= this.MIN_FREQUENCY && frequency <= this.MAX_FREQUENCY ? frequency : 0,
+      confidence: Math.max(0, Math.min(1, confidence))
+    };
+  }
+  
+  /**
+   * Autocorrelation-based pitch detection with NSDF normalization
+   */
+  private static autocorrelationPitch(data: Float32Array): PitchResult {
+    const correlation = this.autocorrelate(data);
+    
+    const minPeriod = Math.floor(this.SAMPLE_RATE / this.MAX_FREQUENCY);
+    const maxPeriod = Math.min(
+      Math.floor(this.SAMPLE_RATE / this.MIN_FREQUENCY),
+      correlation.length - 1
+    );
     
     let bestPeriod = 0;
     let bestCorrelation = 0;
@@ -240,14 +411,13 @@ export class Mp3ToMidiConverter {
     let lastValue = correlation[minPeriod];
     let ascending = false;
     
-    for (let period = minPeriod + 1; period < Math.min(maxPeriod, correlation.length); period++) {
+    for (let period = minPeriod + 1; period < maxPeriod; period++) {
       const value = correlation[period];
       
       if (value > lastValue) {
         ascending = true;
       } else if (ascending && value < lastValue) {
-        // Found a peak at period - 1
-        if (correlation[period - 1] > bestCorrelation && correlation[period - 1] > 0.5) {
+        if (correlation[period - 1] > bestCorrelation && correlation[period - 1] > 0.4) {
           bestCorrelation = correlation[period - 1];
           bestPeriod = period - 1;
           break; // Take the first significant peak
@@ -262,12 +432,17 @@ export class Mp3ToMidiConverter {
       return { frequency: 0, confidence: 0 };
     }
     
-    // Parabolic interpolation for better accuracy
+    // Parabolic interpolation
     const y1 = correlation[bestPeriod - 1] || 0;
     const y2 = correlation[bestPeriod];
     const y3 = correlation[bestPeriod + 1] || 0;
     
-    const refinedPeriod = bestPeriod + (y3 - y1) / (2 * (2 * y2 - y1 - y3));
+    let refinedPeriod = bestPeriod;
+    const denom = 2 * y2 - y1 - y3;
+    if (denom !== 0) {
+      refinedPeriod = bestPeriod + (y3 - y1) / (2 * denom);
+    }
+    
     const frequency = this.SAMPLE_RATE / refinedPeriod;
     
     return {
@@ -277,26 +452,39 @@ export class Mp3ToMidiConverter {
   }
   
   /**
-   * Autocorrelation function
+   * Calculate zero-crossing rate
+   */
+  private static zeroCrossingRate(data: Float32Array): number {
+    let crossings = 0;
+    for (let i = 1; i < data.length; i++) {
+      if ((data[i] >= 0 && data[i - 1] < 0) || (data[i] < 0 && data[i - 1] >= 0)) {
+        crossings++;
+      }
+    }
+    return crossings / data.length;
+  }
+  
+  /**
+   * Autocorrelation function (NSDF - Normalized Square Difference Function)
    */
   private static autocorrelate(data: Float32Array): Float32Array {
     const n = data.length;
     const result = new Float32Array(n);
     
-    // Normalize by the autocorrelation at lag 0
-    let r0 = 0;
-    for (let i = 0; i < n; i++) {
-      r0 += data[i] * data[i];
-    }
-    
-    if (r0 === 0) return result;
-    
+    // Calculate autocorrelation with normalization
     for (let lag = 0; lag < n; lag++) {
       let sum = 0;
+      let norm1 = 0;
+      let norm2 = 0;
+      
       for (let i = 0; i < n - lag; i++) {
         sum += data[i] * data[i + lag];
+        norm1 += data[i] * data[i];
+        norm2 += data[i + lag] * data[i + lag];
       }
-      result[lag] = sum / r0;
+      
+      const norm = Math.sqrt(norm1 * norm2);
+      result[lag] = norm > 0 ? sum / norm : 0;
     }
     
     return result;

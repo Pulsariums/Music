@@ -60,12 +60,16 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const [isPlayingMidi, setIsPlayingMidi] = useState(false);
   const [currentMidi, setCurrentMidi] = useState<SongSequence | null>(null);
   const [midiTempo, setMidiTempo] = useState(100); // Playback speed percentage (100% = normal)
+  const [midiPlaybackTime, setMidiPlaybackTime] = useState(0); // Current playback time in seconds
   const midiTimeoutRefs = useRef<number[]>([]);
+  const midiStartTimeRef = useRef<number>(0);
+  const midiAnimationRef = useRef<number>(0);
 
   // Refs for interactions
   const dragRef = useRef<{ startX: number, startY: number, initX: number, initY: number } | null>(null);
   const resizeRef = useRef<{ startX: number, startY: number, initW: number, initH: number } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const fallingNotesCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Generate Local Keyboard (Standard 88 keys range effectively)
   const notes = useMemo(() => generateKeyboard(1, 7), []);
@@ -177,13 +181,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose, getPanPosition());
   const stopLocal = (note: string, freq: number) => onStopNote(note, freq, transpose);
 
-  // --- MIDI PLAYBACK ---
+  // --- MIDI PLAYBACK WITH FALLING NOTES ---
   const playMidi = (sequence: SongSequence) => {
     stopMidi(); // Stop any current playback
     setCurrentMidi(sequence);
     setIsPlayingMidi(true);
+    setMidiPlaybackTime(0);
     
-    const startTime = Date.now();
+    midiStartTimeRef.current = Date.now();
     const pan = getPanPosition();
     const tempoMultiplier = 100 / midiTempo; // 100% = 1x, 50% = 2x slower, 200% = 0.5x faster
     
@@ -212,21 +217,146 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     const endTimeout = window.setTimeout(() => {
       setIsPlayingMidi(false);
       setCurrentMidi(null);
+      setMidiPlaybackTime(0);
+      cancelAnimationFrame(midiAnimationRef.current);
     }, maxTime * 1000 * tempoMultiplier + 100);
     midiTimeoutRefs.current.push(endTimeout);
+    
+    // Start falling notes animation
+    startFallingNotesAnimation(tempoMultiplier);
   };
   
   const stopMidi = () => {
     midiTimeoutRefs.current.forEach(t => clearTimeout(t));
     midiTimeoutRefs.current = [];
+    cancelAnimationFrame(midiAnimationRef.current);
     setIsPlayingMidi(false);
     setCurrentMidi(null);
+    setMidiPlaybackTime(0);
+    
+    // Clear canvas
+    const canvas = fallingNotesCanvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+  };
+  
+  // Falling notes animation
+  const startFallingNotesAnimation = (tempoMultiplier: number) => {
+    const animate = () => {
+      if (!isPlayingMidi && !currentMidi) return;
+      
+      const elapsed = (Date.now() - midiStartTimeRef.current) / 1000 / tempoMultiplier;
+      setMidiPlaybackTime(elapsed);
+      
+      renderFallingNotes(elapsed, tempoMultiplier);
+      
+      midiAnimationRef.current = requestAnimationFrame(animate);
+    };
+    
+    midiAnimationRef.current = requestAnimationFrame(animate);
+  };
+  
+  // Render falling notes on canvas
+  const renderFallingNotes = (currentTime: number, tempoMultiplier: number) => {
+    const canvas = fallingNotesCanvasRef.current;
+    const scrollContainer = scrollContainerRef.current;
+    if (!canvas || !scrollContainer || !currentMidi) return;
+    
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    
+    // Set canvas size to match container
+    canvas.width = scrollContainer.scrollWidth;
+    canvas.height = size.height - 50; // Leave space for header
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Calculate visible time window (notes fall from top)
+    const lookAheadTime = 3; // Show notes 3 seconds ahead
+    const pixelsPerSecond = (canvas.height) / lookAheadTime;
+    
+    // Get scroll offset for correct positioning
+    const scrollOffset = scrollContainer.scrollLeft;
+    
+    // Map MIDI notes to keyboard positions
+    const notePositions = new Map<string, { x: number; width: number; isBlack: boolean }>();
+    let xOffset = 16; // Initial padding
+    
+    notes.forEach((note, idx) => {
+      if (note.type === 'white') {
+        notePositions.set(note.note, { x: xOffset, width: keyWidth, isBlack: false });
+        xOffset += keyWidth;
+      } else {
+        // Black keys overlap
+        notePositions.set(note.note, { 
+          x: xOffset - keyWidth * 0.325, 
+          width: keyWidth * 0.65, 
+          isBlack: true 
+        });
+      }
+    });
+    
+    // Render each note
+    currentMidi.events.forEach(event => {
+      const noteEnd = event.startTime + event.duration;
+      
+      // Only render notes that are visible in the time window
+      if (noteEnd >= currentTime - 0.5 && event.startTime <= currentTime + lookAheadTime) {
+        const notePos = notePositions.get(event.noteName);
+        if (!notePos) return;
+        
+        // Calculate Y position (notes fall down)
+        const timeUntilNote = event.startTime - currentTime;
+        const yTop = (lookAheadTime - timeUntilNote) * pixelsPerSecond - (event.duration * pixelsPerSecond);
+        const noteHeight = event.duration * pixelsPerSecond;
+        
+        // Adjust X position for scroll
+        const x = notePos.x - scrollOffset;
+        
+        // Only draw if visible
+        if (x + notePos.width > 0 && x < size.width) {
+          // Determine color based on note type and state
+          const isPlaying = currentTime >= event.startTime && currentTime <= noteEnd;
+          
+          if (notePos.isBlack) {
+            ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Indigo for black keys
+          } else {
+            ctx.fillStyle = isPlaying ? '#a78bfa' : '#7c3aed'; // Purple for white keys
+          }
+          
+          // Draw rounded rectangle
+          const radius = 4;
+          const y = Math.max(0, yTop);
+          const height = Math.min(noteHeight, canvas.height - y);
+          
+          if (height > 0) {
+            ctx.beginPath();
+            ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
+            ctx.fill();
+            
+            // Add glow effect for playing notes
+            if (isPlaying) {
+              ctx.shadowColor = '#a78bfa';
+              ctx.shadowBlur = 10;
+              ctx.fillStyle = 'rgba(167, 139, 250, 0.5)';
+              ctx.fill();
+              ctx.shadowBlur = 0;
+            }
+          }
+        }
+      }
+    });
   };
   
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       midiTimeoutRefs.current.forEach(t => clearTimeout(t));
+      cancelAnimationFrame(midiAnimationRef.current);
     };
   }, []);
 
@@ -291,6 +421,19 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
         {/* CONTENT: KEYBOARD */}
         <div className="flex-1 relative bg-black/40 group/keyboard">
+            
+            {/* FALLING NOTES CANVAS - Overlays the keyboard */}
+            {isPlayingMidi && currentMidi && (
+              <canvas
+                ref={fallingNotesCanvasRef}
+                className="absolute inset-0 z-40 pointer-events-none"
+                style={{ 
+                  width: '100%', 
+                  height: '100%',
+                  opacity: 0.9
+                }}
+              />
+            )}
             
             {/* LEFT ARROW */}
             <button 
