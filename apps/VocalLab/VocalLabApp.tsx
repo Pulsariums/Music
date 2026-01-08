@@ -21,6 +21,9 @@ export const VocalLabApp: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const [recordings, setRecordings] = useState<AudioRecording[]>([]);
+  const [playingRecordings, setPlayingRecordings] = useState<Set<string>>(new Set());
+  const [loopingRecordings, setLoopingRecordings] = useState<Set<string>>(new Set());
+  const audioRefs = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   // Sequencer
   const [currentSequence, setCurrentSequence] = useState<SongSequence | null>(null);
@@ -138,6 +141,58 @@ export const VocalLabApp: React.FC = () => {
       a.download = `${rec.name}.webm`;
       a.click();
       URL.revokeObjectURL(url);
+  };
+
+  const handlePlayRecording = (rec: AudioRecording) => {
+      let audio = audioRefs.current.get(rec.id);
+      
+      if (!audio) {
+          audio = new Audio(URL.createObjectURL(rec.blob));
+          audio.addEventListener('ended', () => {
+              if (!loopingRecordings.has(rec.id)) {
+                  setPlayingRecordings(prev => {
+                      const next = new Set(prev);
+                      next.delete(rec.id);
+                      return next;
+                  });
+              }
+          });
+          audioRefs.current.set(rec.id, audio);
+      }
+      
+      audio.loop = loopingRecordings.has(rec.id);
+      audio.play();
+      setPlayingRecordings(prev => new Set(prev).add(rec.id));
+  };
+
+  const handleStopRecording = (recId: string) => {
+      const audio = audioRefs.current.get(recId);
+      if (audio) {
+          audio.pause();
+          audio.currentTime = 0;
+      }
+      setPlayingRecordings(prev => {
+          const next = new Set(prev);
+          next.delete(recId);
+          return next;
+      });
+  };
+
+  const handleToggleLoop = (recId: string) => {
+      setLoopingRecordings(prev => {
+          const next = new Set(prev);
+          if (next.has(recId)) {
+              next.delete(recId);
+          } else {
+              next.add(recId);
+          }
+          // Update audio element loop property if it exists
+          const audio = audioRefs.current.get(recId);
+          if (audio) {
+              audio.loop = next.has(recId);
+          }
+          return next;
+      });
   };
 
   // --- SEQUENCER LOGIC (Simplified for Visualization) ---
@@ -343,23 +398,45 @@ export const VocalLabApp: React.FC = () => {
                          </div>
                      ) : (
                          recordings.map(rec => (
-                             <div key={rec.id} className="bg-white/5 rounded-lg p-3 flex items-center gap-3 group hover:bg-white/10 transition-colors">
-                                 <div className="w-10 h-10 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0">
-                                     ♫
+                             <div key={rec.id} className={`rounded-lg p-3 flex items-center gap-3 group transition-colors ${playingRecordings.has(rec.id) ? 'bg-indigo-500/20 border border-indigo-500/30' : 'bg-white/5 hover:bg-white/10'}`}>
+                                 <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${playingRecordings.has(rec.id) ? 'bg-indigo-500/30 text-indigo-300' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                                     {playingRecordings.has(rec.id) ? '🔊' : '♫'}
                                  </div>
                                  <div className="flex-1 min-w-0">
-                                     <div className="text-sm font-medium text-white truncate">{rec.name}</div>
+                                     <div className="text-sm font-medium text-white truncate flex items-center gap-2">
+                                         {rec.name}
+                                         {loopingRecordings.has(rec.id) && <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">LOOP</span>}
+                                     </div>
                                      <div className="text-xs text-zinc-500">{new Date(rec.timestamp).toLocaleString()}</div>
                                  </div>
                                  <div className="flex items-center gap-1">
-                                     <audio src={URL.createObjectURL(rec.blob)} className="hidden" id={`audio-${rec.id}`} controls />
+                                     {/* Play/Stop Button */}
+                                     {playingRecordings.has(rec.id) ? (
+                                         <button 
+                                            onClick={() => handleStopRecording(rec.id)}
+                                            className="p-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-red-400"
+                                            title="Stop"
+                                         >
+                                            ⏹
+                                         </button>
+                                     ) : (
+                                         <button 
+                                            onClick={() => handlePlayRecording(rec)}
+                                            className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
+                                            title="Play"
+                                         >
+                                            ►
+                                         </button>
+                                     )}
+                                     {/* Loop Toggle */}
                                      <button 
-                                        onClick={() => (document.getElementById(`audio-${rec.id}`) as HTMLAudioElement)?.play()}
-                                        className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
-                                        title="Play"
+                                        onClick={() => handleToggleLoop(rec.id)}
+                                        className={`p-2 rounded-lg transition-colors ${loopingRecordings.has(rec.id) ? 'bg-green-500/20 text-green-400' : 'hover:bg-white/10 text-zinc-500 hover:text-zinc-300'}`}
+                                        title={loopingRecordings.has(rec.id) ? "Disable Loop" : "Enable Loop"}
                                      >
-                                        ►
+                                        🔁
                                      </button>
+                                     {/* Download */}
                                      <button 
                                         onClick={() => handleDownloadRecording(rec)}
                                         className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
@@ -367,6 +444,7 @@ export const VocalLabApp: React.FC = () => {
                                      >
                                         ↓
                                      </button>
+                                     {/* Delete */}
                                      <button 
                                         onClick={() => handleDeleteRecording(rec.id)}
                                         className="p-2 hover:bg-red-500/20 rounded-lg text-zinc-500 hover:text-red-400"
