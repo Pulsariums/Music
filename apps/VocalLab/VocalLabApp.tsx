@@ -336,15 +336,27 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
 
   // --- GENERIC HANDLERS ---
+  // Import MIDI to library (doesn't auto-play)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
         try {
-            const seq = await SimpleMidiParser.parse(e.target.files[0]);
-            setCurrentSequence(seq);
-            setPlaybackTime(0);
-            setIsPlayingSeq(true);
-        } catch(e) { alert("MIDI Error"); }
+            const file = e.target.files[0];
+            const seq = await SimpleMidiParser.parse(file);
+            const midiFile: SavedMidiFile = {
+              id: crypto.randomUUID(),
+              name: file.name.replace('.mid', '').replace('.midi', ''),
+              sequence: seq
+            };
+            await SessionRepository.saveMidiFile(midiFile);
+            await loadMidiFiles();
+            Logger.log('info', 'MIDI file added to library', { name: midiFile.name });
+            alert(`MIDI file "${midiFile.name}" added to library! Open any piano's MIDI menu to play it.`);
+        } catch(e) { 
+            alert("Failed to import MIDI file"); 
+        }
     }
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // --- MIDI FILE MANAGEMENT ---
@@ -548,6 +560,17 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
     
     // Add default piano on start
     addPiano();
+    
+    // Cleanup: stop all audio when navigating away or unmounting
+    return () => {
+      AudioEngine.stopAllNotes();
+      // Also stop any recording playback
+      audioRefs.current.forEach((audio) => {
+        audio.pause();
+        audio.currentTime = 0;
+      });
+      audioRefs.current.clear();
+    };
   }, []);
 
   return (

@@ -234,6 +234,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     setCurrentMidi(null);
     setMidiPlaybackTime(0);
     
+    // Stop all currently playing notes from this MIDI
+    AudioEngine.stopAllNotes();
+    
     // Clear canvas
     const canvas = fallingNotesCanvasRef.current;
     if (canvas) {

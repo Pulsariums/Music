@@ -374,6 +374,51 @@ class FMAudioCore {
   public getSpatialAudio(): boolean {
     return this.spatialAudioEnabled;
   }
+
+  /**
+   * Stop all currently playing notes immediately.
+   * Use this when navigating away or when the user wants to stop all sound.
+   */
+  public stopAllNotes() {
+    if (!this.ctx) return;
+    
+    const t = this.ctx.currentTime;
+    
+    // Iterate through all active voices and stop them
+    for (const [freq, voices] of this.activeVoices.entries()) {
+      voices.forEach(voice => {
+        const releaseTime = 0.05; // Quick fade out to avoid pops
+        
+        // Fade out the voice quickly
+        voice.outputNode.gain.setValueAtTime(voice.outputNode.gain.value, t);
+        voice.outputNode.gain.linearRampToValueAtTime(0, t + releaseTime);
+        
+        // Stop oscillators
+        voice.nodes.forEach(node => {
+          if (node instanceof OscillatorNode) {
+            try {
+              node.stop(t + releaseTime + 0.01);
+            } catch (e) {
+              // Already stopped
+            }
+          }
+        });
+        
+        // Schedule cleanup
+        setTimeout(() => {
+          voice.nodes.forEach(n => {
+            try { n.disconnect(); } catch (e) {}
+          });
+          try { voice.outputNode.disconnect(); } catch (e) {}
+        }, (releaseTime * 1000) + 100);
+      });
+    }
+    
+    // Clear all active voices
+    this.activeVoices.clear();
+    
+    Logger.log('info', 'All notes stopped');
+  }
 }
 
 interface VoiceNode {
