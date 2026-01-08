@@ -169,7 +169,12 @@ class FMAudioCore {
 
     // Map Params
     const harmonicRatio = tension * 4 + 0.5; // Controls Timbre
-    const modulationIndex = hammerHardness * 1000; // Controls Brightness
+    
+    // Reduce modulation for low frequencies to prevent distortion
+    // Low frequencies need much less modulation to sound clean
+    const freqNormalized = Math.min(1, Math.max(0.1, freq / 440)); // Normalize around A4
+    const lowFreqDamping = Math.pow(freqNormalized, 0.5); // Square root for smoother curve
+    const modulationIndex = hammerHardness * 600 * lowFreqDamping; // Reduced base and damped for low freqs
     
     // 1. CARRIER (The Pitch)
     const carrier = this.ctx.createOscillator();
@@ -188,8 +193,11 @@ class FMAudioCore {
     
     // Calculate dynamic gain based on polyphony to prevent clipping
     const activeVoiceCount = this.activeVoices.size + 1;
-    const polyphonyScale = Math.min(1.0, 4 / Math.sqrt(activeVoiceCount)); // Diminishing gain with more voices
-    const targetGain = this.baseGain * polyphonyScale;
+    const polyphonyScale = Math.min(1.0, 3 / Math.sqrt(activeVoiceCount)); // More aggressive scaling
+    
+    // Low frequencies need slightly less gain to prevent muddiness
+    const freqGainAdjust = freq < 200 ? 0.8 : (freq < 400 ? 0.9 : 1.0);
+    const targetGain = this.baseGain * polyphonyScale * freqGainAdjust;
     
     // Initial State
     carrierGain.gain.setValueAtTime(0, t);
@@ -208,9 +216,8 @@ class FMAudioCore {
     }
 
     // 4. MODULATOR ENVELOPE (Brightness ADSR)
-    // Brighter sounds have higher modulation index
-    // The "Wub" effect comes from changing this envelope
-    const modDepth = modulationIndex * (1 + (500/freq)); 
+    // Reduced modulation depth for cleaner sound, especially on low frequencies
+    const modDepth = modulationIndex * (1 + (300/freq)) * lowFreqDamping; 
     modulatorGain.gain.setValueAtTime(0, t);
     modulatorGain.gain.linearRampToValueAtTime(modDepth, t + attackTime);
     

@@ -269,36 +269,69 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
-    // Set canvas size to match container
-    canvas.width = scrollContainer.scrollWidth;
-    canvas.height = size.height - 50; // Leave space for header
+    // Get visible width and actual scroll position
+    const visibleWidth = size.width;
+    const canvasHeight = size.height - 50; // Leave space for header
+    const scrollOffset = scrollContainer.scrollLeft;
+    
+    // Set canvas size to match VISIBLE area (not scroll area)
+    canvas.width = visibleWidth;
+    canvas.height = canvasHeight;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Calculate visible time window (notes fall from top)
     const lookAheadTime = 3; // Show notes 3 seconds ahead
-    const pixelsPerSecond = (canvas.height) / lookAheadTime;
+    const pixelsPerSecond = (canvasHeight) / lookAheadTime;
     
-    // Get scroll offset for correct positioning
-    const scrollOffset = scrollContainer.scrollLeft;
-    
-    // Map MIDI notes to keyboard positions
-    const notePositions = new Map<string, { x: number; width: number; isBlack: boolean }>();
-    let xOffset = 16; // Initial padding
-    
-    notes.forEach((note, idx) => {
-      if (note.type === 'white') {
-        notePositions.set(note.note, { x: xOffset, width: keyWidth, isBlack: false });
-        xOffset += keyWidth;
+    // Map MIDI notes to keyboard positions - calculate based on note names
+    // C1 starts at position 0, each white key adds keyWidth
+    const getNotePosition = (noteName: string): { x: number; width: number; isBlack: boolean } | null => {
+      // Parse note name (e.g., "C4", "C#4", "Db4")
+      const match = noteName.match(/^([A-G])([#b]?)(\d+)$/);
+      if (!match) return null;
+      
+      const [, letter, accidental, octaveStr] = match;
+      const octave = parseInt(octaveStr, 10);
+      
+      // White key notes: C, D, E, F, G, A, B
+      // Black key notes: C#/Db, D#/Eb, F#/Gb, G#/Ab, A#/Bb
+      const whiteKeyOrder = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+      const isBlack = accidental === '#' || accidental === 'b';
+      
+      // Calculate which white key this note is at or adjacent to
+      let baseWhiteKeyIndex: number;
+      if (isBlack) {
+        if (accidental === '#') {
+          baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
+        } else {
+          // Flat - it's the note before
+          const flatIndex = whiteKeyOrder.indexOf(letter);
+          baseWhiteKeyIndex = flatIndex - 1;
+          if (baseWhiteKeyIndex < 0) baseWhiteKeyIndex = 6; // Bb is before B
+        }
       } else {
-        // Black keys overlap
-        notePositions.set(note.note, { 
-          x: xOffset - keyWidth * 0.325, 
-          width: keyWidth * 0.65, 
-          isBlack: true 
-        });
+        baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
       }
-    });
+      
+      // Calculate absolute white key position from C1
+      const octaveOffset = (octave - 1) * 7; // 7 white keys per octave
+      const whiteKeyPosition = octaveOffset + baseWhiteKeyIndex;
+      
+      // Calculate X position
+      const startPadding = 16; // Same as keyboard padding
+      const whiteKeyWidth = keyWidth;
+      const blackKeyWidth = keyWidth * 0.65;
+      
+      if (isBlack) {
+        // Black key overlaps between two white keys
+        const x = startPadding + (whiteKeyPosition * whiteKeyWidth) + (whiteKeyWidth * 0.675);
+        return { x, width: blackKeyWidth, isBlack: true };
+      } else {
+        const x = startPadding + (whiteKeyPosition * whiteKeyWidth);
+        return { x, width: whiteKeyWidth, isBlack: false };
+      }
+    };
     
     // Render each note
     currentMidi.events.forEach(event => {
@@ -306,21 +339,29 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       
       // Only render notes that are visible in the time window
       if (noteEnd >= currentTime - 0.5 && event.startTime <= currentTime + lookAheadTime) {
-        const notePos = notePositions.get(event.noteName);
+        const notePos = getNotePosition(event.noteName);
         if (!notePos) return;
         
-        // Calculate Y position (notes fall down)
+        // Calculate Y position (notes fall down toward bottom)
         const timeUntilNote = event.startTime - currentTime;
-        const yTop = (lookAheadTime - timeUntilNote) * pixelsPerSecond - (event.duration * pixelsPerSecond);
-        const noteHeight = event.duration * pixelsPerSecond;
+        const noteHeight = Math.max(4, event.duration * pixelsPerSecond);
         
-        // Adjust X position for scroll
+        // Y position: 0 = top of canvas, notes at currentTime should be at bottom
+        // Notes coming up should be at top and fall down
+        const yBottom = canvasHeight - (timeUntilNote * pixelsPerSecond);
+        const yTop = yBottom - noteHeight;
+        
+        // Adjust X position for scroll offset
         const x = notePos.x - scrollOffset;
         
-        // Only draw if visible
-        if (x + notePos.width > 0 && x < size.width) {
+        // Only draw if visible in viewport
+        if (x + notePos.width > 0 && x < visibleWidth) {
           // Determine color based on note type and state
           const isPlaying = currentTime >= event.startTime && currentTime <= noteEnd;
+          
+          // Reset shadow for clean drawing
+          ctx.shadowBlur = 0;
+          ctx.shadowColor = 'transparent';
           
           if (notePos.isBlack) {
             ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Indigo for black keys
@@ -331,9 +372,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
           // Draw rounded rectangle
           const radius = 4;
           const y = Math.max(0, yTop);
-          const height = Math.min(noteHeight, canvas.height - y);
+          const height = Math.min(noteHeight, canvasHeight - y);
           
-          if (height > 0) {
+          if (height > 0 && y < canvasHeight) {
             ctx.beginPath();
             ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
             ctx.fill();
@@ -341,8 +382,10 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             // Add glow effect for playing notes
             if (isPlaying) {
               ctx.shadowColor = '#a78bfa';
-              ctx.shadowBlur = 10;
-              ctx.fillStyle = 'rgba(167, 139, 250, 0.5)';
+              ctx.shadowBlur = 15;
+              ctx.fillStyle = 'rgba(167, 139, 250, 0.6)';
+              ctx.beginPath();
+              ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
               ctx.fill();
               ctx.shadowBlur = 0;
             }
@@ -508,9 +551,16 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <div className="w-2 h-2 border-r-2 border-b-2 border-zinc-500"></div>
         </div>
 
-        {/* POPUP MENUS */}
+        {/* POPUP MENUS - render in portal-like fixed position */}
         {showPresetMenu && (
-            <div className="absolute top-10 left-2 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] flex flex-col max-h-[300px] no-drag">
+            <div 
+              className="fixed w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl flex flex-col max-h-[300px] no-drag"
+              style={{ 
+                top: position.y + 50,
+                left: position.x + 8,
+                zIndex: 99999
+              }}
+            >
                  <div className="p-3 border-b border-white/5 text-[10px] font-bold text-zinc-500 uppercase">Library</div>
                  <div className="overflow-y-auto flex-1 p-1">
                     {Object.values(PRESETS).map(p => (
@@ -528,7 +578,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         )}
 
         {showSettings && (
-             <div className="absolute top-10 right-2 w-56 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] p-4 space-y-4 no-drag">
+             <div 
+               className="fixed w-56 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 space-y-4 no-drag"
+               style={{ 
+                 top: position.y + 50,
+                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 8 : 8,
+                 zIndex: 99999
+               }}
+             >
                  <div>
                     <div className="flex justify-between text-xs text-zinc-400 mb-1">
                         <span>Key Width</span>
@@ -552,7 +609,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         )}
 
         {showVolume && (
-             <div className="absolute top-10 right-12 w-48 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] p-4 no-drag">
+             <div 
+               className="fixed w-48 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl p-4 no-drag"
+               style={{ 
+                 top: position.y + 50,
+                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 48 : 48,
+                 zIndex: 99999
+               }}
+             >
                  <div className="flex justify-between text-xs text-zinc-400 mb-2">
                     <span>Volume</span>
                     <span className="text-indigo-400">{Math.round(volume)}%</span>
@@ -574,7 +638,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
         {/* MIDI FILES MENU */}
         {showMidiMenu && (
-             <div className="absolute top-10 right-20 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] no-drag max-h-96 overflow-hidden flex flex-col">
+             <div 
+               className="fixed w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl no-drag max-h-96 overflow-hidden flex flex-col"
+               style={{ 
+                 top: position.y + 50,
+                 right: typeof window !== 'undefined' ? window.innerWidth - position.x - size.width + 80 : 80,
+                 zIndex: 99999
+               }}
+             >
                  <div className="flex items-center justify-between p-3 border-b border-white/10">
                     <span className="text-xs font-bold text-zinc-400 uppercase">MIDI Files</span>
                     {isPlayingMidi && (
