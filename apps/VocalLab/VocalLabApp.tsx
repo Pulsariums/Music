@@ -16,6 +16,9 @@ export const VocalLabApp: React.FC = () => {
   // UI Config
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [fallingSpeed, setFallingSpeed] = useState(250);
+  const [showAudioSettings, setShowAudioSettings] = useState(false);
+  const [softModeEnabled, setSoftModeEnabled] = useState(false);
+  const [spatialAudioEnabled, setSpatialAudioEnabled] = useState(false);
 
   // Recording
   const [isRecording, setIsRecording] = useState(false);
@@ -76,9 +79,9 @@ export const VocalLabApp: React.FC = () => {
   };
 
   // --- AUDIO ACTIONS ---
-  const startNote = useCallback((note: string, freq: number, preset: InstrumentPreset, transpose: number) => {
+  const startNote = useCallback((note: string, freq: number, preset: InstrumentPreset, transpose: number, panPosition?: number) => {
     const transposedFreq = freq * Math.pow(2, transpose / 12);
-    AudioEngine.playNote(transposedFreq, preset);
+    AudioEngine.playNote(transposedFreq, preset, panPosition);
     setActiveNotes(prev => new Set(prev).add(note));
   }, []);
 
@@ -193,6 +196,18 @@ export const VocalLabApp: React.FC = () => {
           }
           return next;
       });
+  };
+
+  const handleToggleSoftMode = () => {
+      const newValue = !softModeEnabled;
+      setSoftModeEnabled(newValue);
+      AudioEngine.setSoftMode(newValue);
+  };
+
+  const handleToggleSpatialAudio = () => {
+      const newValue = !spatialAudioEnabled;
+      setSpatialAudioEnabled(newValue);
+      AudioEngine.setSpatialAudio(newValue);
   };
 
   // --- SEQUENCER LOGIC (Simplified for Visualization) ---
@@ -381,6 +396,57 @@ export const VocalLabApp: React.FC = () => {
 
         </div>
 
+        {/* AUDIO SETTINGS (Top Right) */}
+        <div className="absolute top-4 right-4 z-[100]">
+            <button 
+                onClick={() => setShowAudioSettings(!showAudioSettings)}
+                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showAudioSettings ? 'bg-indigo-500/30 text-indigo-400' : 'bg-black/60 hover:bg-black/80 text-zinc-400 hover:text-white'} backdrop-blur-xl border border-white/10`}
+                title="Audio Settings"
+            >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
+            </button>
+
+            {showAudioSettings && (
+                <div className="absolute top-12 right-0 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3">
+                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
+                    
+                    {/* Soft Mode Toggle */}
+                    <button 
+                        onClick={handleToggleSoftMode}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg transition-all ${softModeEnabled ? 'bg-indigo-500/20 border border-indigo-500/30' : 'bg-white/5 hover:bg-white/10'}`}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">🎵</span>
+                            <div className="text-left">
+                                <div className="text-sm font-medium text-white">Soft Mode</div>
+                                <div className="text-[10px] text-zinc-500">Smoother, warmer sound</div>
+                            </div>
+                        </div>
+                        <div className={`w-8 h-4 rounded-full transition-colors ${softModeEnabled ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform mt-0.5 ${softModeEnabled ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'}`} />
+                        </div>
+                    </button>
+
+                    {/* Spatial Audio Toggle */}
+                    <button 
+                        onClick={handleToggleSpatialAudio}
+                        className={`w-full flex items-center justify-between p-2 rounded-lg transition-all ${spatialAudioEnabled ? 'bg-indigo-500/20 border border-indigo-500/30' : 'bg-white/5 hover:bg-white/10'}`}
+                    >
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">🎧</span>
+                            <div className="text-left">
+                                <div className="text-sm font-medium text-white">Spatial Audio</div>
+                                <div className="text-[10px] text-zinc-500">L/R based on position</div>
+                            </div>
+                        </div>
+                        <div className={`w-8 h-4 rounded-full transition-colors ${spatialAudioEnabled ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+                            <div className={`w-3 h-3 rounded-full bg-white shadow-sm transition-transform mt-0.5 ${spatialAudioEnabled ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'}`} />
+                        </div>
+                    </button>
+                </div>
+            )}
+        </div>
+
         {/* 3. RECORDINGS LIBRARY MODAL */}
         {showLibrary && (
              <div className="absolute top-24 left-1/2 -translate-x-1/2 w-[90vw] max-w-md bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-[200] flex flex-col max-h-[60vh] overflow-hidden animate-fade-in">
@@ -417,7 +483,7 @@ export const VocalLabApp: React.FC = () => {
                                             className="p-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-red-400"
                                             title="Stop"
                                          >
-                                            ⏹
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" /></svg>
                                          </button>
                                      ) : (
                                          <button 
@@ -425,16 +491,16 @@ export const VocalLabApp: React.FC = () => {
                                             className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
                                             title="Play"
                                          >
-                                            ►
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                                          </button>
                                      )}
                                      {/* Loop Toggle */}
                                      <button 
                                         onClick={() => handleToggleLoop(rec.id)}
-                                        className={`p-2 rounded-lg transition-colors ${loopingRecordings.has(rec.id) ? 'bg-green-500/20 text-green-400' : 'hover:bg-white/10 text-zinc-500 hover:text-zinc-300'}`}
+                                        className={`p-2 rounded-lg transition-colors ${loopingRecordings.has(rec.id) ? 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30' : 'hover:bg-white/10 text-zinc-500 hover:text-zinc-300'}`}
                                         title={loopingRecordings.has(rec.id) ? "Disable Loop" : "Enable Loop"}
                                      >
-                                        🔁
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                                      </button>
                                      {/* Download */}
                                      <button 
@@ -442,7 +508,7 @@ export const VocalLabApp: React.FC = () => {
                                         className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
                                         title="Download"
                                      >
-                                        ↓
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                                      </button>
                                      {/* Delete */}
                                      <button 
@@ -450,7 +516,7 @@ export const VocalLabApp: React.FC = () => {
                                         className="p-2 hover:bg-red-500/20 rounded-lg text-zinc-500 hover:text-red-400"
                                         title="Delete"
                                      >
-                                        🗑
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                                      </button>
                                  </div>
                              </div>

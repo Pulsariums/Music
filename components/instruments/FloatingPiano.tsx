@@ -13,7 +13,7 @@ interface FloatingPianoProps {
   
   // Audio Actions
   activeNotes: Set<string>; // Global active notes (for visualization sync)
-  onPlayNote: (note: string, freq: number, preset: InstrumentPreset, transpose: number) => void;
+  onPlayNote: (note: string, freq: number, preset: InstrumentPreset, transpose: number, panPosition?: number) => void;
   onStopNote: (note: string, freq: number, transpose: number) => void;
   
   // Workspace Actions
@@ -154,7 +154,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
 
   // --- HELPERS ---
-  const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose);
+  // Calculate pan position based on piano's horizontal center relative to screen width
+  const getPanPosition = (): number => {
+    const screenWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const pianoCenterX = position.x + (size.width / 2);
+    return Math.max(0, Math.min(1, pianoCenterX / screenWidth));
+  };
+  
+  const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose, getPanPosition());
   const stopLocal = (note: string, freq: number) => onStopNote(note, freq, transpose);
 
   // Dynamic Key Height based on window height

@@ -24,6 +24,11 @@ class FMAudioCore {
   // Active Voices Registry
   private activeVoices: Map<number, VoiceNode[]> = new Map();
 
+  // Audio Effects Settings
+  private softModeEnabled: boolean = false;
+  private spatialAudioEnabled: boolean = false;
+  private softModeFilter: BiquadFilterNode | null = null;
+
   constructor() {
     Logger.log('info', 'FMAudioCore: Engine v5 Initialized');
   }
@@ -37,30 +42,37 @@ class FMAudioCore {
 
         // 1. Master Bus
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.4; 
+        this.masterGain.gain.value = 0.35; // Slightly lower to prevent clipping
 
-        // 2. Brickwall Limiter
+        // 2. Soft Mode Filter (Low-pass for smoother sound)
+        this.softModeFilter = this.ctx.createBiquadFilter();
+        this.softModeFilter.type = 'lowpass';
+        this.softModeFilter.frequency.value = 20000; // Full range when disabled
+        this.softModeFilter.Q.value = 0.5;
+
+        // 3. Brickwall Limiter (More aggressive to prevent crackling)
         this.limiter = this.ctx.createDynamicsCompressor();
-        this.limiter.threshold.value = -1.0; 
-        this.limiter.knee.value = 0;
+        this.limiter.threshold.value = -3.0; 
+        this.limiter.knee.value = 3;
         this.limiter.ratio.value = 20; 
         this.limiter.attack.value = 0.001; 
-        this.limiter.release.value = 0.1;
+        this.limiter.release.value = 0.05; // Faster release
 
-        // 3. Reverb Unit
+        // 4. Reverb Unit
         this.convolver = this.ctx.createConvolver();
         this.convolver.buffer = this.generateReverbImpulse(3.0);
         
         const reverbReturn = this.ctx.createGain();
         reverbReturn.gain.value = 1.0; 
 
-        // Graph
+        // Graph: masterGain -> softModeFilter -> limiter -> destination
         this.convolver.connect(reverbReturn);
         reverbReturn.connect(this.masterGain);
-        this.masterGain.connect(this.limiter);
+        this.masterGain.connect(this.softModeFilter);
+        this.softModeFilter.connect(this.limiter);
         this.limiter.connect(this.ctx.destination);
 
-        // 4. Recording Tap
+        // 5. Recording Tap
         this.mediaDest = this.ctx.createMediaStreamDestination();
         this.limiter.connect(this.mediaDest);
 
@@ -110,7 +122,7 @@ class FMAudioCore {
     return buffer;
   }
 
-  public playNote(freq: number, preset: InstrumentPreset) {
+  public playNote(freq: number, preset: InstrumentPreset, panPosition?: number) {
     if (!this.ctx) { this.init(); return; }
     if (this.ctx.state === 'suspended') this.ctx.resume();
 
@@ -121,8 +133,19 @@ class FMAudioCore {
     // Create FM Voice
     const voice = this.createFMVoice(freq, preset, t);
     
-    // Connect to Master (Dry)
-    voice.outputNode.connect(this.masterGain!);
+    // Apply Spatial Audio (Panning) if enabled
+    if (this.spatialAudioEnabled && panPosition !== undefined && this.ctx) {
+        const panner = this.ctx.createStereoPanner();
+        // panPosition: 0 = left edge, 1 = right edge
+        // Convert to -1 (left) to +1 (right)
+        panner.pan.value = (panPosition * 2) - 1;
+        voice.outputNode.connect(panner);
+        panner.connect(this.masterGain!);
+        voice.nodes.push(panner);
+    } else {
+        // Connect to Master (Dry)
+        voice.outputNode.connect(this.masterGain!);
+    }
 
     // Connect to Reverb (Wet)
     if (this.convolver && preset.physics.reverbMix > 0) {
@@ -256,6 +279,27 @@ class FMAudioCore {
 
   public getVolume(): number {
     return this.masterGain?.gain.value ?? 0.4;
+  }
+
+  public setSoftMode(enabled: boolean) {
+    this.softModeEnabled = enabled;
+    if (this.softModeFilter) {
+      // When soft mode is enabled, cut high frequencies for smoother sound
+      this.softModeFilter.frequency.value = enabled ? 4000 : 20000;
+      this.softModeFilter.Q.value = enabled ? 0.7 : 0.5;
+    }
+  }
+
+  public getSoftMode(): boolean {
+    return this.softModeEnabled;
+  }
+
+  public setSpatialAudio(enabled: boolean) {
+    this.spatialAudioEnabled = enabled;
+  }
+
+  public getSpatialAudio(): boolean {
+    return this.spatialAudioEnabled;
   }
 }
 
