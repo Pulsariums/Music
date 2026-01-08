@@ -29,6 +29,10 @@ class FMAudioCore {
   private spatialAudioEnabled: boolean = false;
   private softModeFilter: BiquadFilterNode | null = null;
 
+  // Polyphony management - prevent clipping when many notes play
+  private maxPolyphony: number = 32;
+  private baseGain: number = 0.25; // Per-voice base gain
+
   constructor() {
     Logger.log('info', 'FMAudioCore: Engine v5 Initialized');
   }
@@ -42,7 +46,7 @@ class FMAudioCore {
 
         // 1. Master Bus
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.35; // Slightly lower to prevent clipping
+        this.masterGain.gain.value = 0.30; // Lower to prevent clipping with polyphony
 
         // 2. Soft Mode Filter (Low-pass for smoother sound)
         this.softModeFilter = this.ctx.createBiquadFilter();
@@ -50,13 +54,13 @@ class FMAudioCore {
         this.softModeFilter.frequency.value = 20000; // Full range when disabled
         this.softModeFilter.Q.value = 0.5;
 
-        // 3. Brickwall Limiter (More aggressive to prevent crackling)
+        // 3. Brickwall Limiter (Very aggressive to prevent crackling)
         this.limiter = this.ctx.createDynamicsCompressor();
-        this.limiter.threshold.value = -3.0; 
-        this.limiter.knee.value = 3;
+        this.limiter.threshold.value = -6.0; // Lower threshold catches more peaks
+        this.limiter.knee.value = 6; // Softer knee for smoother limiting
         this.limiter.ratio.value = 20; 
-        this.limiter.attack.value = 0.001; 
-        this.limiter.release.value = 0.05; // Faster release
+        this.limiter.attack.value = 0.0005; // Very fast attack to catch transients
+        this.limiter.release.value = 0.025; // Faster release to avoid pumping
 
         // 4. Reverb Unit
         this.convolver = this.ctx.createConvolver();
@@ -182,20 +186,24 @@ class FMAudioCore {
     // 3. CARRIER ENVELOPE (Volume ADSR)
     const carrierGain = this.ctx.createGain();
     
+    // Calculate dynamic gain based on polyphony to prevent clipping
+    const activeVoiceCount = this.activeVoices.size + 1;
+    const polyphonyScale = Math.min(1.0, 4 / Math.sqrt(activeVoiceCount)); // Diminishing gain with more voices
+    const targetGain = this.baseGain * polyphonyScale;
+    
     // Initial State
     carrierGain.gain.setValueAtTime(0, t);
     
-    // Attack Phase
-    // Use slightly exponential attack for natural feel
-    carrierGain.gain.linearRampToValueAtTime(1.0, t + attackTime);
+    // Attack Phase - use scaled gain
+    carrierGain.gain.linearRampToValueAtTime(targetGain, t + attackTime);
     
     // Decay & Sustain Phase
     if (preset.sustainMode === SustainMode.PERCUSSIVE) {
         // Percussive sounds ignore sustainLevel and fade out completely
         carrierGain.gain.exponentialRampToValueAtTime(0.001, t + attackTime + decayTime);
     } else {
-        // Natural/Infinite sounds drop to sustain level
-        const sustainVal = Math.max(0.001, sustainLevel); // prevent 0 for exponential ramp
+        // Natural/Infinite sounds drop to sustain level (scaled)
+        const sustainVal = Math.max(0.001, sustainLevel * targetGain);
         carrierGain.gain.exponentialRampToValueAtTime(sustainVal, t + attackTime + decayTime);
     }
 

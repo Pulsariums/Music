@@ -119,3 +119,25 @@ export interface WorkspaceItem {
     startOctave: number;
   };
 }
+
+// --- SESSION TYPES ---
+
+export interface WorkspaceSession {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  items: WorkspaceItem[];
+  audioSettings: {
+    volume: number;
+    softMode: boolean;
+    spatialAudio: boolean;
+  };
+  midiFiles: SavedMidiFile[];
+}
+
+export interface SavedMidiFile {
+  id: string;
+  name: string;
+  sequence: SongSequence;
+}

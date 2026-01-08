@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { InstrumentPreset, NoteDef } from '../../types';
+import { InstrumentPreset, NoteDef, SongSequence, SavedMidiFile } from '../../types';
 import { PRESETS } from '../../services/audio/presets';
-import { getClientCoordinates, generateKeyboard } from '../../services/audio/musicUtils';
+import { getClientCoordinates, generateKeyboard, noteToFreq } from '../../services/audio/musicUtils';
 import { AudioEngine } from '../../services/audio/AudioEngine';
 
 interface FloatingPianoProps {
@@ -20,6 +20,10 @@ interface FloatingPianoProps {
   onFocus: () => void;
   onClose: () => void;
   onUpdateConfig: (config: any) => void; // Save state back to parent
+  
+  // MIDI Support
+  midiFiles?: SavedMidiFile[];
+  onImportMidi?: () => void;
 }
 
 export const FloatingPiano: React.FC<FloatingPianoProps> = ({
@@ -32,7 +36,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   onStopNote,
   onFocus,
   onClose,
-  onUpdateConfig
+  onUpdateConfig,
+  midiFiles = [],
+  onImportMidi
 }) => {
   // --- LOCAL STATE ---
   const [activePreset, setActivePreset] = useState<InstrumentPreset>(PRESETS.CONCERT_GRAND);
@@ -48,6 +54,12 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const [showPresetMenu, setShowPresetMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showVolume, setShowVolume] = useState(false);
+  const [showMidiMenu, setShowMidiMenu] = useState(false);
+  
+  // MIDI Playback State
+  const [isPlayingMidi, setIsPlayingMidi] = useState(false);
+  const [currentMidi, setCurrentMidi] = useState<SongSequence | null>(null);
+  const midiTimeoutRefs = useRef<number[]>([]);
 
   // Refs for interactions
   const dragRef = useRef<{ startX: number, startY: number, initX: number, initY: number } | null>(null);
@@ -164,6 +176,58 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose, getPanPosition());
   const stopLocal = (note: string, freq: number) => onStopNote(note, freq, transpose);
 
+  // --- MIDI PLAYBACK ---
+  const playMidi = (sequence: SongSequence) => {
+    stopMidi(); // Stop any current playback
+    setCurrentMidi(sequence);
+    setIsPlayingMidi(true);
+    
+    const startTime = Date.now();
+    const pan = getPanPosition();
+    
+    sequence.events.forEach(event => {
+      // Schedule note on
+      const noteOnTimeout = window.setTimeout(() => {
+        const freq = noteToFreq(event.noteName);
+        if (freq) {
+          onPlayNote(event.noteName, freq, activePreset, transpose, pan);
+        }
+      }, event.startTime * 1000);
+      
+      // Schedule note off
+      const noteOffTimeout = window.setTimeout(() => {
+        const freq = noteToFreq(event.noteName);
+        if (freq) {
+          onStopNote(event.noteName, freq, transpose);
+        }
+      }, (event.startTime + event.duration) * 1000);
+      
+      midiTimeoutRefs.current.push(noteOnTimeout, noteOffTimeout);
+    });
+    
+    // Schedule playback end
+    const maxTime = Math.max(...sequence.events.map(e => e.startTime + e.duration));
+    const endTimeout = window.setTimeout(() => {
+      setIsPlayingMidi(false);
+      setCurrentMidi(null);
+    }, maxTime * 1000 + 100);
+    midiTimeoutRefs.current.push(endTimeout);
+  };
+  
+  const stopMidi = () => {
+    midiTimeoutRefs.current.forEach(t => clearTimeout(t));
+    midiTimeoutRefs.current = [];
+    setIsPlayingMidi(false);
+    setCurrentMidi(null);
+  };
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      midiTimeoutRefs.current.forEach(t => clearTimeout(t));
+    };
+  }, []);
+
   // Dynamic Key Height based on window height
   // Header is approx 40px, bottom padding 20px. 
   const keyHeight = Math.max(80, size.height - 70); 
@@ -202,6 +266,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
              {/* Right: Controls */}
              <div className="flex items-center gap-1">
+                {/* MIDI Button */}
+                <button 
+                    onClick={() => setShowMidiMenu(!showMidiMenu)} 
+                    className={`p-1.5 rounded hover:bg-white/10 no-drag ${isPlayingMidi ? 'text-green-400 animate-pulse' : showMidiMenu ? 'text-indigo-400' : 'text-zinc-500 hover:text-white'}`} 
+                    title={isPlayingMidi ? "Playing MIDI" : "MIDI Files"}
+                >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+                </button>
                 <button onClick={() => setShowVolume(!showVolume)} className={`p-1.5 rounded hover:bg-white/10 no-drag ${showVolume ? 'text-indigo-400' : 'text-zinc-500 hover:text-white'}`} title="Volume">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
                 </button>
@@ -352,6 +424,54 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                     <span>0%</span>
                     <span>100%</span>
                  </div>
+             </div>
+        )}
+
+        {/* MIDI FILES MENU */}
+        {showMidiMenu && (
+             <div className="absolute top-10 right-20 w-64 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] no-drag max-h-80 overflow-hidden flex flex-col">
+                 <div className="flex items-center justify-between p-3 border-b border-white/10">
+                    <span className="text-xs font-bold text-zinc-400 uppercase">MIDI Files</span>
+                    {isPlayingMidi && (
+                        <button onClick={stopMidi} className="text-xs bg-red-500/20 text-red-400 px-2 py-1 rounded hover:bg-red-500/30">
+                            Stop
+                        </button>
+                    )}
+                 </div>
+                 
+                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {midiFiles.length === 0 ? (
+                        <div className="text-center text-zinc-500 text-xs py-4">
+                            No MIDI files loaded.<br/>Import from toolbar.
+                        </div>
+                    ) : (
+                        midiFiles.map(midi => (
+                            <button
+                                key={midi.id}
+                                onClick={() => {
+                                    playMidi(midi.sequence);
+                                    setShowMidiMenu(false);
+                                }}
+                                className={`w-full text-left text-xs p-2 rounded hover:bg-white/10 flex items-center gap-2 ${currentMidi?.id === midi.sequence.id ? 'bg-green-500/20 text-green-400' : 'text-zinc-300'}`}
+                            >
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                <span className="truncate">{midi.name}</span>
+                            </button>
+                        ))
+                    )}
+                 </div>
+                 
+                 {onImportMidi && (
+                    <div className="border-t border-white/10 p-2">
+                        <button 
+                            onClick={() => { onImportMidi(); setShowMidiMenu(false); }}
+                            className="w-full text-xs bg-indigo-500/20 text-indigo-400 py-2 rounded hover:bg-indigo-500/30 flex items-center justify-center gap-2"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                            Import MIDI
+                        </button>
+                    </div>
+                 )}
              </div>
         )}
 

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AudioEngine } from '../../services/audio/AudioEngine';
 import { PRESETS } from '../../services/audio/presets';
-import { InstrumentPreset, AudioRecording, SongSequence, WorkspaceItem } from '../../types';
+import { InstrumentPreset, AudioRecording, SongSequence, WorkspaceItem, SavedMidiFile, WorkspaceSession } from '../../types';
 import { Logger } from '../../lib/logger';
 import { RecordingRepository } from '../../services/data/RecordingRepository';
+import { SessionRepository } from '../../services/data/SessionRepository';
 import { SimpleMidiParser } from '../../services/midi/SimpleMidiParser';
 import { FloatingPiano } from '../../components/instruments/FloatingPiano';
 
@@ -33,6 +34,14 @@ export const VocalLabApp: React.FC = () => {
   const [isPlayingSeq, setIsPlayingSeq] = useState(false);
   const [playbackTime, setPlaybackTime] = useState(0);
 
+  // MIDI Files
+  const [midiFiles, setMidiFiles] = useState<SavedMidiFile[]>([]);
+  
+  // Session Management
+  const [showSessionMenu, setShowSessionMenu] = useState(false);
+  const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -40,6 +49,8 @@ export const VocalLabApp: React.FC = () => {
   const startTimeRef = useRef<number>(0);
   const lastFrameTimeRef = useRef<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const midiFileInputRef = useRef<HTMLInputElement>(null);
+  const sessionFileInputRef = useRef<HTMLInputElement>(null);
   
   const playingSequenceNotes = useRef<Map<number, number>>(new Map());
 
@@ -313,10 +324,147 @@ export const VocalLabApp: React.FC = () => {
     }
   };
 
+  // --- MIDI FILE MANAGEMENT ---
+  const loadMidiFiles = async () => {
+    try {
+      const files = await SessionRepository.getAllMidiFiles();
+      setMidiFiles(files);
+    } catch (e) {
+      Logger.log('error', 'Failed to load MIDI files');
+    }
+  };
+
+  const handleMidiImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      try {
+        const file = e.target.files[0];
+        const seq = await SimpleMidiParser.parse(file);
+        const midiFile: SavedMidiFile = {
+          id: crypto.randomUUID(),
+          name: file.name.replace('.mid', '').replace('.midi', ''),
+          sequence: seq
+        };
+        await SessionRepository.saveMidiFile(midiFile);
+        await loadMidiFiles();
+        Logger.log('info', 'MIDI file imported', { name: midiFile.name });
+      } catch (e) {
+        alert("Failed to import MIDI file");
+      }
+    }
+    // Reset input
+    if (midiFileInputRef.current) midiFileInputRef.current.value = '';
+  };
+
+  const handleMidiExport = (sequence: SongSequence) => {
+    const json = SessionRepository.exportMidiToJSON(sequence);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${sequence.title || 'midi'}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // --- SESSION MANAGEMENT ---
+  const loadSessions = async () => {
+    try {
+      const list = await SessionRepository.getAllSessions();
+      setSessions(list);
+    } catch (e) {
+      Logger.log('error', 'Failed to load sessions');
+    }
+  };
+
+  const saveCurrentSession = async (name?: string) => {
+    const session: WorkspaceSession = {
+      id: currentSessionId || crypto.randomUUID(),
+      name: name || `Session ${new Date().toLocaleString()}`,
+      createdAt: currentSessionId ? sessions.find(s => s.id === currentSessionId)?.createdAt || Date.now() : Date.now(),
+      updatedAt: Date.now(),
+      items: items,
+      audioSettings: {
+        volume: AudioEngine.getVolume(),
+        softMode: softModeEnabled,
+        spatialAudio: spatialAudioEnabled
+      },
+      midiFiles: midiFiles
+    };
+    
+    await SessionRepository.saveSession(session);
+    setCurrentSessionId(session.id);
+    await loadSessions();
+    Logger.log('info', 'Session saved', { id: session.id });
+  };
+
+  const loadSession = async (session: WorkspaceSession) => {
+    setItems(session.items);
+    setCurrentSessionId(session.id);
+    
+    // Apply audio settings
+    if (session.audioSettings) {
+      AudioEngine.setVolume(session.audioSettings.volume);
+      setSoftModeEnabled(session.audioSettings.softMode);
+      setSpatialAudioEnabled(session.audioSettings.spatialAudio);
+      AudioEngine.setSoftMode(session.audioSettings.softMode);
+      AudioEngine.setSpatialAudio(session.audioSettings.spatialAudio);
+    }
+    
+    // Load MIDI files from session
+    if (session.midiFiles) {
+      setMidiFiles(session.midiFiles);
+    }
+    
+    setShowSessionMenu(false);
+    Logger.log('info', 'Session loaded', { id: session.id });
+  };
+
+  const exportSession = async () => {
+    const session: WorkspaceSession = {
+      id: currentSessionId || crypto.randomUUID(),
+      name: `Export ${new Date().toLocaleString()}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      items: items,
+      audioSettings: {
+        volume: AudioEngine.getVolume(),
+        softMode: softModeEnabled,
+        spatialAudio: spatialAudioEnabled
+      },
+      midiFiles: midiFiles
+    };
+    
+    const json = SessionRepository.exportSession(session);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `soundsphere-session-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleSessionImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      try {
+        const text = await e.target.files[0].text();
+        const session = SessionRepository.importSession(text);
+        await SessionRepository.saveSession(session);
+        await loadSessions();
+        loadSession(session);
+      } catch (e) {
+        alert("Failed to import session");
+      }
+    }
+    if (sessionFileInputRef.current) sessionFileInputRef.current.value = '';
+  };
+
   // --- INIT ---
   // Moved after function definitions to avoid TDZ issues
   useEffect(() => {
     loadRecordings();
+    loadMidiFiles();
+    loadSessions();
     AudioEngine.init({ latencyHint: 'interactive' });
     
     // Add default piano on start
@@ -394,7 +542,79 @@ export const VocalLabApp: React.FC = () => {
                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
             </button>
 
+            <div className="w-px h-6 bg-white/10 mx-2" />
+
+            {/* Session Management */}
+            <button 
+                onClick={() => setShowSessionMenu(!showSessionMenu)}
+                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showSessionMenu ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                title="Session Manager"
+            >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+            </button>
+
         </div>
+
+        {/* SESSION MENU DROPDOWN */}
+        {showSessionMenu && (
+            <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[110] w-80 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl overflow-hidden">
+                <div className="flex items-center justify-between p-3 border-b border-white/10">
+                    <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Session Manager</span>
+                    <button onClick={() => setShowSessionMenu(false)} className="text-zinc-500 hover:text-white">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                </div>
+                
+                {/* Quick Actions */}
+                <div className="p-3 grid grid-cols-2 gap-2 border-b border-white/10">
+                    <button 
+                        onClick={() => saveCurrentSession()}
+                        className="flex items-center justify-center gap-2 py-2 bg-indigo-500/20 text-indigo-400 rounded-lg hover:bg-indigo-500/30 text-xs font-medium"
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" /></svg>
+                        Save Session
+                    </button>
+                    <button 
+                        onClick={exportSession}
+                        className="flex items-center justify-center gap-2 py-2 bg-white/10 text-zinc-300 rounded-lg hover:bg-white/20 text-xs font-medium"
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                        Export
+                    </button>
+                    <button 
+                        onClick={() => sessionFileInputRef.current?.click()}
+                        className="flex items-center justify-center gap-2 py-2 bg-white/10 text-zinc-300 rounded-lg hover:bg-white/20 text-xs font-medium col-span-2"
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                        Import Session
+                    </button>
+                </div>
+                
+                {/* Saved Sessions */}
+                <div className="max-h-48 overflow-y-auto p-2">
+                    {sessions.length === 0 ? (
+                        <div className="text-center text-zinc-500 text-xs py-4">No saved sessions</div>
+                    ) : (
+                        sessions.map(s => (
+                            <button
+                                key={s.id}
+                                onClick={() => loadSession(s)}
+                                className={`w-full text-left p-2 rounded-lg hover:bg-white/10 mb-1 ${currentSessionId === s.id ? 'bg-indigo-500/20 border border-indigo-500/30' : ''}`}
+                            >
+                                <div className="text-sm text-white font-medium truncate">{s.name}</div>
+                                <div className="text-[10px] text-zinc-500">
+                                    {new Date(s.updatedAt).toLocaleString()} • {s.items.length} instruments
+                                </div>
+                            </button>
+                        ))
+                    )}
+                </div>
+            </div>
+        )}
+
+        {/* Hidden file inputs */}
+        <input ref={midiFileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleMidiImport} />
+        <input ref={sessionFileInputRef} type="file" accept=".json" hidden onChange={handleSessionImport} />
 
         {/* AUDIO SETTINGS (Top Right) */}
         <div className="absolute top-4 right-4 z-[100]">
@@ -540,6 +760,8 @@ export const VocalLabApp: React.FC = () => {
                 onFocus={() => focusItem(item.instanceId)}
                 onClose={() => removeItem(item.instanceId)}
                 onUpdateConfig={() => {}}
+                midiFiles={midiFiles}
+                onImportMidi={() => midiFileInputRef.current?.click()}
             />
         ))}
 

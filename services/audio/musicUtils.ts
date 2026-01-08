@@ -30,3 +30,28 @@ export const getClientCoordinates = (e: MouseEvent | TouchEvent | React.MouseEve
     }
     return { x: (e as MouseEvent).clientX, y: (e as MouseEvent).clientY };
 };
+
+// Convert note name (e.g., "C4") to frequency
+export const noteToFreq = (noteName: string): number | null => {
+    const match = noteName.match(/^([A-G]#?)(\d+)$/);
+    if (!match) return null;
+    
+    const noteMap: Record<string, number> = {
+        'C': 0, 'C#': 1, 'D': 2, 'D#': 3, 'E': 4, 'F': 5,
+        'F#': 6, 'G': 7, 'G#': 8, 'A': 9, 'A#': 10, 'B': 11
+    };
+    
+    const note = match[1];
+    const octave = parseInt(match[2], 10);
+    const semitone = noteMap[note];
+    
+    if (semitone === undefined) return null;
+    
+    const midi = octave * 12 + semitone + 12;
+    return 440 * Math.pow(2, (midi - 69) / 12);
+};
+
+// Convert MIDI number to frequency
+export const midiToFreq = (midi: number): number => {
+    return 440 * Math.pow(2, (midi - 69) / 12);
+};
