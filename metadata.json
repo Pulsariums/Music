@@ -1,0 +1,7 @@
+{
+  "name": "Copy of SoundSphere OS 2",
+  "description": "A modular super-app platform for musical mastery. Features AI-powered lyric synchronization, memorization tools, and vocal training modules.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
