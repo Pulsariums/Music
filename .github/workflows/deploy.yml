@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - copilot/deploy-music-project
+      - copilot/fix-midi-import-issues
   workflow_dispatch:
 
 permissions:
