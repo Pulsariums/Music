@@ -5,6 +5,7 @@ export enum AppID {
   DASHBOARD = 'dashboard',
   LYRICAL_MASTER = 'lyrical_master',
   VOCAL_LAB = 'vocal_lab',
+  MIDI_EDITOR = 'midi_editor',
   SETTINGS = 'settings'
 }
 
@@ -118,4 +119,26 @@ export interface WorkspaceItem {
     transpose: number;
     startOctave: number;
   };
+}
+
+// --- SESSION TYPES ---
+
+export interface WorkspaceSession {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  items: WorkspaceItem[];
+  audioSettings: {
+    volume: number;
+    softMode: boolean;
+    spatialAudio: boolean;
+  };
+  midiFiles: SavedMidiFile[];
+}
+
+export interface SavedMidiFile {
+  id: string;
+  name: string;
+  sequence: SongSequence;
 }
