@@ -5,6 +5,7 @@ import { PRESETS } from '../../services/audio/presets';
 import { AudioEngine } from '../../services/audio/AudioEngine';
 import { noteToFreq, midiToNoteName, noteNameToMidi } from '../../services/audio/musicUtils';
 import { Mp3ToMidiConverter } from '../../services/audio/Mp3ToMidiConverter';
+import { SimpleMidiParser } from '../../services/midi/SimpleMidiParser';
 
 // Piano roll constants
 const NOTE_HEIGHT = 12;
@@ -246,8 +247,24 @@ export const MidiEditorApp: React.FC<MidiEditorAppProps> = ({ onBack }) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (!file) return;
       
-      // Basic MIDI import (simplified - real MIDI parsing is complex)
-      alert('Standard MIDI import coming soon. Use audio import for now.');
+      try {
+        const sequence = await SimpleMidiParser.parse(file);
+        
+        // Save to database
+        const midiFile: SavedMidiFile = {
+          id: crypto.randomUUID(),
+          name: file.name.replace(/\.midi?$/i, ''),
+          sequence,
+          createdAt: Date.now()
+        };
+        
+        await SessionRepository.saveMidiFile(midiFile);
+        await loadMidiFiles();
+        handleSelectMidi(midiFile);
+      } catch (error) {
+        console.error('MIDI import failed:', error);
+        alert('Failed to import MIDI file. The file may be corrupted or in an unsupported format.');
+      }
     };
     
     input.click();
