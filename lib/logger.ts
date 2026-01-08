@@ -43,8 +43,10 @@ class ForensicLogger {
     // Fallback to console for standard devtools
     if (level === 'error' || level === 'fatal') {
       console.error(`[${level.toUpperCase()}]`, message, context);
+    } else if (level === 'warn') {
+      console.warn(`[${level.toUpperCase()}]`, message, context);
     } else {
-      console.log(`[${level.toUpperCase()}]`, message);
+      console.log(`[${level.toUpperCase()}]`, message, context);
     }
   }
 
