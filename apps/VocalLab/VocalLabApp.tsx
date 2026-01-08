@@ -478,7 +478,7 @@ export const VocalLabApp: React.FC = () => {
           setConversionProgress(progress);
         });
         
-        if (!midiFile.data.notes || midiFile.data.notes.length === 0) {
+        if (!midiFile.sequence.events || midiFile.sequence.events.length === 0) {
           setIsConverting(false);
           setConversionProgress(0);
           alert('No notes detected. Try a clearer audio file with a single melody (piano solo, vocal, etc.).');
@@ -496,7 +496,7 @@ export const VocalLabApp: React.FC = () => {
           console.warn('Failed to save MIDI to DB:', err);
         });
         
-        alert(`Conversion complete! "${midiFile.name}" added to MIDI library with ${midiFile.data.notes.length} notes detected.`);
+        alert(`Conversion complete! "${midiFile.name}" added to MIDI library with ${midiFile.sequence.events.length} notes detected.`);
       } catch (error) {
         console.error('MP3 to MIDI conversion failed:', error);
         setIsConverting(false);

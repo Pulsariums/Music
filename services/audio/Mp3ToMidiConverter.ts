@@ -6,7 +6,7 @@
  * Optimized for browser performance with chunked processing.
  */
 
-import { SavedMidiFile } from '../../types';
+import { SavedMidiFile, SongSequence, NoteEvent } from '../../types';
 
 interface DetectedNote {
   midiNote: number;
@@ -55,16 +55,22 @@ export class Mp3ToMidiConverter {
       
       if (onProgress) onProgress(95);
       
-      // Convert to MIDI format
-      const midiData = this.notesToMidi(notes, audioBuffer.duration);
+      // Convert to SongSequence format (matches types.ts)
+      const sequenceId = crypto.randomUUID();
+      const fileName = file.name.replace(/\.[^/.]+$/, '') + ' (Converted)';
       
-      // Create SavedMidiFile
+      const sequence: SongSequence = {
+        id: sequenceId,
+        title: fileName,
+        bpm: 120, // Default BPM
+        events: this.notesToEvents(notes)
+      };
+      
+      // Create SavedMidiFile matching the correct type
       const midiFile: SavedMidiFile = {
         id: crypto.randomUUID(),
-        name: file.name.replace(/\.[^/.]+$/, '') + ' (Converted)',
-        data: midiData,
-        duration: audioBuffer.duration * 1000,
-        createdAt: Date.now()
+        name: fileName,
+        sequence: sequence
       };
       
       if (onProgress) onProgress(100);
@@ -335,24 +341,23 @@ export class Mp3ToMidiConverter {
   }
   
   /**
-   * Convert detected notes to our MIDI format
+   * Convert detected notes to NoteEvent[] format (matches types.ts)
    */
-  private static notesToMidi(notes: DetectedNote[], totalDuration: number): { notes: Array<{ time: number; note: string; duration: number; velocity: number }> } {
+  private static notesToEvents(notes: DetectedNote[]): NoteEvent[] {
     const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
     
-    const midiNotes = notes.map(note => {
+    return notes.map(note => {
       const octave = Math.floor(note.midiNote / 12) - 1;
       const noteName = NOTE_NAMES[note.midiNote % 12];
       
       return {
-        time: note.startTime * 1000, // Convert to ms
-        note: `${noteName}${octave}`,
-        duration: note.duration * 1000, // Convert to ms
-        velocity: note.velocity
+        noteName: `${noteName}${octave}`,
+        midi: note.midiNote,
+        startTime: note.startTime, // in seconds
+        duration: note.duration, // in seconds
+        velocity: note.velocity / 127 // normalize to 0-1
       };
     });
-    
-    return { notes: midiNotes };
   }
   
   /**
@@ -360,23 +365,27 @@ export class Mp3ToMidiConverter {
    * Creates a Type 0 MIDI file
    */
   static exportToMidiFile(midiFile: SavedMidiFile): Blob {
-    const notes = midiFile.data.notes;
-    const events: Array<{ time: number; type: 'on' | 'off'; note: number; velocity: number }> = [];
+    const noteEvents = midiFile.sequence.events;
+    const midiEvents: Array<{ time: number; type: 'on' | 'off'; note: number; velocity: number }> = [];
     
-    // Convert notes to MIDI events
-    for (const note of notes) {
-      const midiNote = this.noteNameToMidi(note.note);
-      if (midiNote === -1) continue;
+    // Convert NoteEvents to MIDI events
+    for (const noteEvent of noteEvents) {
+      const midiNote = noteEvent.midi;
+      if (midiNote < 0 || midiNote > 127) continue;
       
-      events.push({
-        time: note.time,
+      // Convert startTime from seconds to milliseconds
+      const startTimeMs = noteEvent.startTime * 1000;
+      const durationMs = noteEvent.duration * 1000;
+      
+      midiEvents.push({
+        time: startTimeMs,
         type: 'on',
         note: midiNote,
-        velocity: note.velocity || 80
+        velocity: Math.round(noteEvent.velocity * 127) || 80
       });
       
-      events.push({
-        time: note.time + note.duration,
+      midiEvents.push({
+        time: startTimeMs + durationMs,
         type: 'off',
         note: midiNote,
         velocity: 0
@@ -384,7 +393,7 @@ export class Mp3ToMidiConverter {
     }
     
     // Sort by time
-    events.sort((a, b) => a.time - b.time);
+    midiEvents.sort((a, b) => a.time - b.time);
     
     // Build MIDI file bytes
     const ticksPerQuarter = 480;
@@ -403,7 +412,7 @@ export class Mp3ToMidiConverter {
     
     // Note events
     let lastTime = 0;
-    for (const event of events) {
+    for (const event of midiEvents) {
       const ticks = Math.round(event.time / msPerTick);
       const delta = ticks - lastTime;
       lastTime = ticks;
