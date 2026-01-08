@@ -41,6 +41,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
   // MIDI Files
   const [midiFiles, setMidiFiles] = useState<SavedMidiFile[]>([]);
+  const [showMidiLibrary, setShowMidiLibrary] = useState(false);
   
   // Session Management
   const [showSessionMenu, setShowSessionMenu] = useState(false);
@@ -401,6 +402,16 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
     URL.revokeObjectURL(url);
   };
 
+  const handleDeleteMidiFile = async (id: string) => {
+    try {
+      await SessionRepository.deleteMidiFile(id);
+      setMidiFiles(prev => prev.filter(m => m.id !== id));
+      Logger.log('info', 'MIDI file deleted', { id });
+    } catch (e) {
+      Logger.log('error', 'Failed to delete MIDI file', { id }, e as Error);
+    }
+  };
+
   // --- SESSION MANAGEMENT ---
   const loadSessions = async () => {
     try {
@@ -622,6 +633,15 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
                  <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
             </button>
 
+            {/* MIDI Library Toggle */}
+            <button 
+                onClick={() => setShowMidiLibrary(!showMidiLibrary)}
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showMidiLibrary ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                title="MIDI Library"
+            >
+                 <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+            </button>
+
             {/* MP3 to MIDI Converter */}
             <button 
                 onClick={() => setShowMp3Converter(!showMp3Converter)}
@@ -635,7 +655,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             <button onClick={() => fileInputRef.current?.click()} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0" title="Import MIDI">
                 <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
             </button>
-            <input ref={fileInputRef} type="file" accept=".mid" hidden onChange={handleFileUpload} />
+            <input ref={fileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleFileUpload} />
 
             {currentSequence && (
                 <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl flex-shrink-0 ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
@@ -958,7 +978,70 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
              </div>
         )}
 
-        {/* 4. WORKSPACE ITEMS */}
+        {/* 4. MIDI LIBRARY MODAL */}
+        {showMidiLibrary && (
+             <div className="absolute top-24 left-1/2 -translate-x-1/2 w-[90vw] max-w-md bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-[200] flex flex-col max-h-[60vh] overflow-hidden animate-fade-in">
+                 <div className="flex items-center justify-between p-4 border-b border-white/10">
+                     <h3 className="font-bold text-white flex items-center gap-2">
+                        <span className="text-indigo-400">●</span> MIDI Library
+                     </h3>
+                     <button onClick={() => setShowMidiLibrary(false)} className="text-zinc-500 hover:text-white">✕</button>
+                 </div>
+                 
+                 {/* Quick Actions */}
+                 <div className="p-3 border-b border-white/10 flex gap-2">
+                     <button 
+                         onClick={() => fileInputRef.current?.click()}
+                         className="flex-1 flex items-center justify-center gap-2 py-2 bg-indigo-500/20 text-indigo-400 rounded-lg hover:bg-indigo-500/30 text-xs font-medium"
+                     >
+                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                         Import MIDI
+                     </button>
+                 </div>
+                 
+                 <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                     {midiFiles.length === 0 ? (
+                         <div className="text-center p-8 text-zinc-500 text-sm">
+                             No MIDI files found.<br/>Import a .mid or .midi file to get started.
+                         </div>
+                     ) : (
+                         midiFiles.map(midi => (
+                             <div key={midi.id} className="rounded-lg p-3 flex items-center gap-3 group transition-colors bg-white/5 hover:bg-white/10">
+                                 <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-indigo-500/20 text-indigo-400">
+                                     🎹
+                                 </div>
+                                 <div className="flex-1 min-w-0">
+                                     <div className="text-sm font-medium text-white truncate">
+                                         {midi.name}
+                                     </div>
+                                     <div className="text-xs text-zinc-500">{midi.sequence.events.length} notes • {midi.sequence.bpm || 120} BPM</div>
+                                 </div>
+                                 <div className="flex items-center gap-1">
+                                     {/* Export as JSON */}
+                                     <button 
+                                        onClick={() => handleMidiExport(midi.sequence)}
+                                        className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
+                                        title="Export as JSON"
+                                     >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                     </button>
+                                     {/* Delete */}
+                                     <button 
+                                        onClick={() => handleDeleteMidiFile(midi.id)}
+                                        className="p-2 hover:bg-red-500/20 rounded-lg text-zinc-500 hover:text-red-400"
+                                        title="Delete"
+                                     >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                     </button>
+                                 </div>
+                             </div>
+                         ))
+                     )}
+                 </div>
+             </div>
+        )}
+
+        {/* 5. WORKSPACE ITEMS */}
         {items.map(item => (
             <FloatingPiano 
                 key={item.instanceId}
