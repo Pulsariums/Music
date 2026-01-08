@@ -245,6 +245,18 @@ class FMAudioCore {
       this.ctx.resume();
     }
   }
+
+  public setVolume(value: number) {
+    if (this.masterGain) {
+      // Clamp between 0 and 1
+      const clampedValue = Math.max(0, Math.min(1, value));
+      this.masterGain.gain.value = clampedValue;
+    }
+  }
+
+  public getVolume(): number {
+    return this.masterGain?.gain.value ?? 0.4;
+  }
 }
 
 interface VoiceNode {

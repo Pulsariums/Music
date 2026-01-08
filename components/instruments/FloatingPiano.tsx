@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { InstrumentPreset, NoteDef } from '../../types';
 import { PRESETS } from '../../services/audio/presets';
 import { getClientCoordinates, generateKeyboard } from '../../services/audio/musicUtils';
+import { AudioEngine } from '../../services/audio/AudioEngine';
 
 interface FloatingPianoProps {
   id: string; // Unique Instance ID
@@ -37,6 +38,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const [activePreset, setActivePreset] = useState<InstrumentPreset>(PRESETS.CONCERT_GRAND);
   const [keyWidth, setKeyWidth] = useState(50);
   const [transpose, setTranspose] = useState(0);
+  const [volume, setVolume] = useState(AudioEngine.getVolume() * 100);
   
   // Window State
   const [position, setPosition] = useState(initialPosition);
@@ -45,6 +47,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   // UI Toggles
   const [showPresetMenu, setShowPresetMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showVolume, setShowVolume] = useState(false);
 
   // Refs for interactions
   const dragRef = useRef<{ startX: number, startY: number, initX: number, initY: number } | null>(null);
@@ -144,6 +147,11 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       });
   };
 
+  const handleVolumeChange = (newVolume: number) => {
+      setVolume(newVolume);
+      AudioEngine.setVolume(newVolume / 100);
+  };
+
 
   // --- HELPERS ---
   const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose);
@@ -165,6 +173,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         }}
         onMouseDown={onFocus}
         onTouchStart={onFocus}
+        onContextMenu={(e) => e.preventDefault()}
       >
         {/* HEADER BAR */}
         <div 
@@ -186,6 +195,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
              {/* Right: Controls */}
              <div className="flex items-center gap-1">
+                <button onClick={() => setShowVolume(!showVolume)} className={`p-1.5 rounded hover:bg-white/10 no-drag ${showVolume ? 'text-indigo-400' : 'text-zinc-500 hover:text-white'}`} title="Volume">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+                </button>
                 <button onClick={() => setShowSettings(!showSettings)} className="p-1.5 text-zinc-500 hover:text-white rounded hover:bg-white/10 no-drag">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                 </button>
@@ -315,6 +327,27 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
              </div>
         )}
 
+        {showVolume && (
+             <div className="absolute top-10 right-12 w-48 bg-[#18181b] border border-white/10 rounded-xl shadow-2xl z-[70] p-4 no-drag">
+                 <div className="flex justify-between text-xs text-zinc-400 mb-2">
+                    <span>Volume</span>
+                    <span className="text-indigo-400">{Math.round(volume)}%</span>
+                 </div>
+                 <input 
+                    type="range" 
+                    min="0" 
+                    max="100" 
+                    value={volume} 
+                    onChange={(e) => handleVolumeChange(Number(e.target.value))} 
+                    className="w-full h-1 bg-zinc-700 rounded-full appearance-none cursor-pointer accent-indigo-500"
+                 />
+                 <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
+                    <span>0%</span>
+                    <span>100%</span>
+                 </div>
+             </div>
+        )}
+
       </div>
   );
 };
@@ -344,6 +377,11 @@ const PianoKey: React.FC<PianoKeyProps> = React.memo(({ noteDef, isActive, onPla
         onStop(noteDef.note, noteDef.freq);
     };
 
+    const handleContextMenu = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
     if (isBlack) {
         return (
             <div
@@ -360,7 +398,8 @@ const PianoKey: React.FC<PianoKeyProps> = React.memo(({ noteDef, isActive, onPla
                 onMouseLeave={handleUp}
                 onTouchStart={handleDown}
                 onTouchEnd={handleUp}
-                style={{ height: `${height}px`, width: `${width}px` }}
+                onContextMenu={handleContextMenu}
+                style={{ height: `${height}px`, width: `${width}px`, touchAction: 'none' }}
             >
             </div>
         )
@@ -377,12 +416,13 @@ const PianoKey: React.FC<PianoKeyProps> = React.memo(({ noteDef, isActive, onPla
                 }
                 select-none border-x border-b border-black/10
             `}
-            style={{ height: `${height}px`, width: `${width}px` }}
+            style={{ height: `${height}px`, width: `${width}px`, touchAction: 'none' }}
             onMouseDown={handleDown}
             onMouseUp={handleUp}
             onMouseLeave={handleUp}
             onTouchStart={handleDown}
             onTouchEnd={handleUp}
+            onContextMenu={handleContextMenu}
         >
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-bold text-zinc-400 pointer-events-none opacity-50">
                 {noteDef.note}
