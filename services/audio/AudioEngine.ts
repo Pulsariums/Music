@@ -17,6 +17,11 @@ class FMAudioCore {
   private mediaDest: MediaStreamAudioDestinationNode | null = null;
   private mediaRecorder: MediaRecorder | null = null;
   private recordingChunks: Blob[] = [];
+  private recordingMimeType: string = 'audio/webm'; // Store selected mime type
+  
+  // Recording constants
+  private static readonly RECORDING_DATA_INTERVAL = 100; // ms between data collection
+  private static readonly RECORDING_STOP_DELAY = 100; // ms to wait after stopping previous recording
 
   // Reverb (Algorithmic)
   private convolver: ConvolverNode | null = null;
@@ -108,7 +113,7 @@ class FMAudioCore {
       // Stop any existing recording
       if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
         this.mediaRecorder.stop();
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, FMAudioCore.RECORDING_STOP_DELAY));
       }
       
       this.recordingChunks = [];
@@ -134,11 +139,14 @@ class FMAudioCore {
         return false;
       }
       
+      // Store selected mime type for stopRecording
+      this.recordingMimeType = selectedMimeType;
+      
       this.mediaRecorder = new MediaRecorder(this.mediaDest.stream, { mimeType: selectedMimeType });
       this.mediaRecorder.ondataavailable = (evt) => {
          if (evt.data.size > 0) this.recordingChunks.push(evt.data);
       };
-      this.mediaRecorder.start(100); // Collect data every 100ms for more reliable recordings
+      this.mediaRecorder.start(FMAudioCore.RECORDING_DATA_INTERVAL);
       Logger.log('info', 'Recording started', { mimeType: selectedMimeType });
       return true;
     } catch (e: any) {
@@ -152,7 +160,8 @@ class FMAudioCore {
     return new Promise((resolve) => {
         if (!this.mediaRecorder) return resolve(null);
         this.mediaRecorder.onstop = () => {
-            const blob = new Blob(this.recordingChunks, { type: 'audio/webm' });
+            // Use the same mime type that was selected during startRecording
+            const blob = new Blob(this.recordingChunks, { type: this.recordingMimeType });
             this.recordingChunks = [];
             resolve(blob);
         };
