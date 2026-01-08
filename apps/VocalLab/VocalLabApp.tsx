@@ -131,7 +131,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
           setIsRecording(false);
           try {
               const blob = await AudioEngine.stopRecording();
-              if (blob) {
+              if (blob && blob.size > 0) {
                   const newRec: AudioRecording = {
                       id: crypto.randomUUID(),
                       name: `Session ${new Date().toLocaleTimeString()}`,
@@ -143,14 +143,26 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
                   await RecordingRepository.saveRecording(newRec);
                   await loadRecordings();
                   setShowLibrary(true); // Auto open library to show result
+                  Logger.log('info', 'Recording saved successfully', { size: blob.size });
+              } else {
+                  Logger.log('warn', 'Recording was empty or failed');
               }
           } catch (e) {
               Logger.log('error', 'Failed to save recording', {}, e as Error);
           }
       } else {
-          // START
-          await AudioEngine.startRecording();
-          setIsRecording(true);
+          // START - first play a silent note to ensure AudioContext is ready
+          try {
+              const success = await AudioEngine.startRecording();
+              if (success) {
+                  setIsRecording(true);
+                  Logger.log('info', 'Recording started successfully');
+              } else {
+                  Logger.log('error', 'Failed to start recording');
+              }
+          } catch (e) {
+              Logger.log('error', 'Recording start exception', {}, e as Error);
+          }
       }
   };
 

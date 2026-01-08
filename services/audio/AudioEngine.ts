@@ -87,26 +87,63 @@ class FMAudioCore {
   }
 
   // --- RECORDING ---
-  public async startRecording() {
-    // Ensure audio context is initialized
-    if (!this.ctx || !this.mediaDest) {
-      await this.init();
-    }
-    if (!this.mediaDest) {
-      Logger.log('error', 'Recording failed: mediaDest not available');
-      return;
-    }
-    this.recordingChunks = [];
-    const mimeType = 'audio/webm;codecs=opus';
+  public async startRecording(): Promise<boolean> {
     try {
-      this.mediaRecorder = new MediaRecorder(this.mediaDest.stream, { mimeType });
+      // Ensure audio context is initialized
+      if (!this.ctx) {
+        await this.init();
+      }
+      
+      // Resume context if suspended (browser autoplay policy)
+      if (this.ctx && this.ctx.state === 'suspended') {
+        await this.ctx.resume();
+      }
+      
+      // Wait a bit for mediaDest to be ready
+      if (!this.mediaDest) {
+        Logger.log('error', 'Recording failed: mediaDest not available after init');
+        return false;
+      }
+      
+      // Stop any existing recording
+      if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+        this.mediaRecorder.stop();
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      this.recordingChunks = [];
+      
+      // Try different mime types for browser compatibility
+      const mimeTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/mp4'
+      ];
+      
+      let selectedMimeType = '';
+      for (const mimeType of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mimeType)) {
+          selectedMimeType = mimeType;
+          break;
+        }
+      }
+      
+      if (!selectedMimeType) {
+        Logger.log('error', 'No supported audio format found for recording');
+        return false;
+      }
+      
+      this.mediaRecorder = new MediaRecorder(this.mediaDest.stream, { mimeType: selectedMimeType });
       this.mediaRecorder.ondataavailable = (evt) => {
          if (evt.data.size > 0) this.recordingChunks.push(evt.data);
       };
-      this.mediaRecorder.start();
-      Logger.log('info', 'Recording started');
+      this.mediaRecorder.start(100); // Collect data every 100ms for more reliable recordings
+      Logger.log('info', 'Recording started', { mimeType: selectedMimeType });
+      return true;
     } catch (e: any) {
       Logger.log('error', 'Failed to start recording', { error: e.message });
+      return false;
     }
   }
 
