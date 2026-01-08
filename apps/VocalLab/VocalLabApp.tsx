@@ -556,55 +556,55 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
         </div>
 
         {/* 2. TOP TOOLBAR */}
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl transition-all hover:bg-black/80">
+        <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[100] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-full overflow-x-auto">
             
             {/* Add Piano Button */}
             <button 
                 onClick={addPiano}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition-all active:scale-95 group"
+                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-1.5 sm:py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg sm:rounded-xl transition-all active:scale-95 group"
             >
-                <span className="text-lg font-bold">+</span>
-                <span className="text-xs font-bold uppercase tracking-wider">Add Piano</span>
+                <span className="text-base sm:text-lg font-bold">+</span>
+                <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider hidden xs:inline">Piano</span>
             </button>
 
-            <div className="w-px h-6 bg-white/10 mx-2" />
+            <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
 
             {/* Recorder Toggle */}
             <button 
                 onClick={handleToggleRecording}
-                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${isRecording ? 'bg-red-500/20 text-red-500 border border-red-500/50' : 'hover:bg-white/10 text-zinc-400'}`}
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${isRecording ? 'bg-red-500/20 text-red-500 border border-red-500/50' : 'hover:bg-white/10 text-zinc-400'}`}
                 title={isRecording ? "Stop Recording" : "Start Global Recording"}
             >
-                <div className={`w-3 h-3 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-current'}`} />
+                <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-current'}`} />
             </button>
 
             {/* Recordings Library Toggle */}
             <button 
                 onClick={() => setShowLibrary(!showLibrary)}
-                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showLibrary ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-zinc-400'}`}
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showLibrary ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-zinc-400'}`}
                 title="Recordings Library"
             >
-                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+                 <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
             </button>
 
             {/* MP3 to MIDI Converter */}
             <button 
                 onClick={() => setShowMp3Converter(!showMp3Converter)}
-                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showMp3Converter ? 'bg-purple-500/30 text-purple-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showMp3Converter ? 'bg-purple-500/30 text-purple-400' : 'hover:bg-white/10 text-zinc-400'}`}
                 title="MP3 to MIDI Converter"
             >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
             </button>
 
             {/* MIDI Tools */}
-            <button onClick={() => fileInputRef.current?.click()} className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-white/10 text-zinc-400" title="Import MIDI">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+            <button onClick={() => fileInputRef.current?.click()} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0" title="Import MIDI">
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
             </button>
             <input ref={fileInputRef} type="file" accept=".mid" hidden onChange={handleFileUpload} />
 
             {currentSequence && (
-                <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-10 h-10 flex items-center justify-center rounded-xl ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
-                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d={isPlayingSeq ? "M6 4h4v16H6zM14 4h4v16h-4z" : "M8 5v14l11-7z"}/></svg>
+                <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl flex-shrink-0 ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24"><path d={isPlayingSeq ? "M6 4h4v16H6zM14 4h4v16h-4z" : "M8 5v14l11-7z"}/></svg>
                 </button>
             )}
 
@@ -613,30 +613,30 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
                     if (!document.fullscreenElement) containerRef.current?.requestFullscreen();
                     else document.exitFullscreen();
                 }}
-                className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-white/10 text-zinc-400"
+                className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0 hidden sm:flex"
             >
-                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+                 <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
             </button>
 
-            <div className="w-px h-6 bg-white/10 mx-2" />
+            <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
 
             {/* Session Management */}
             <button 
                 onClick={() => setShowSessionMenu(!showSessionMenu)}
-                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showSessionMenu ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showSessionMenu ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
                 title="Session Manager"
             >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
             </button>
 
             {/* MIDI Editor */}
             {onNavigate && (
                 <button 
                     onClick={() => onNavigate(AppID.MIDI_EDITOR)}
-                    className="w-10 h-10 flex items-center justify-center rounded-xl hover:bg-white/10 text-zinc-400"
+                    className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0"
                     title="MIDI Editor"
                 >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                 </button>
             )}
 
