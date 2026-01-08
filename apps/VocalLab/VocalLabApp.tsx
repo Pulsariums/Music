@@ -6,6 +6,7 @@ import { Logger } from '../../lib/logger';
 import { RecordingRepository } from '../../services/data/RecordingRepository';
 import { SessionRepository } from '../../services/data/SessionRepository';
 import { SimpleMidiParser } from '../../services/midi/SimpleMidiParser';
+import { Mp3ToMidiConverter } from '../../services/audio/Mp3ToMidiConverter';
 import { FloatingPiano } from '../../components/instruments/FloatingPiano';
 
 export const VocalLabApp: React.FC = () => {
@@ -41,6 +42,12 @@ export const VocalLabApp: React.FC = () => {
   const [showSessionMenu, setShowSessionMenu] = useState(false);
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
+  // MP3 to MIDI Converter
+  const [showMp3Converter, setShowMp3Converter] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState(0);
+  const [isConverting, setIsConverting] = useState(false);
+  const mp3FileInputRef = useRef<HTMLInputElement>(null);
 
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
@@ -459,6 +466,45 @@ export const VocalLabApp: React.FC = () => {
     if (sessionFileInputRef.current) sessionFileInputRef.current.value = '';
   };
 
+  // --- MP3 TO MIDI CONVERTER ---
+  const handleMp3Upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      setIsConverting(true);
+      setConversionProgress(0);
+      
+      try {
+        const midiFile = await Mp3ToMidiConverter.convert(file, setConversionProgress);
+        await SessionRepository.saveMidiFile(midiFile);
+        setMidiFiles(prev => [...prev, midiFile]);
+        setShowMp3Converter(false);
+        alert(`Conversion complete! "${midiFile.name}" added to MIDI library with ${midiFile.data.notes.length} notes.`);
+      } catch (error) {
+        console.error('MP3 to MIDI conversion failed:', error);
+        alert('Failed to convert MP3 to MIDI. Try a clearer audio file with a single melody.');
+      } finally {
+        setIsConverting(false);
+        setConversionProgress(0);
+      }
+    }
+    if (mp3FileInputRef.current) mp3FileInputRef.current.value = '';
+  };
+
+  const handleExportConvertedMidi = async (midiFile: SavedMidiFile) => {
+    try {
+      const blob = Mp3ToMidiConverter.exportToMidiFile(midiFile);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${midiFile.name}.mid`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('MIDI export failed:', error);
+      alert('Failed to export MIDI file.');
+    }
+  };
+
   // --- INIT ---
   // Moved after function definitions to avoid TDZ issues
   useEffect(() => {
@@ -518,6 +564,15 @@ export const VocalLabApp: React.FC = () => {
                 title="Recordings Library"
             >
                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+            </button>
+
+            {/* MP3 to MIDI Converter */}
+            <button 
+                onClick={() => setShowMp3Converter(!showMp3Converter)}
+                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showMp3Converter ? 'bg-purple-500/30 text-purple-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                title="MP3 to MIDI Converter"
+            >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
             </button>
 
             {/* MIDI Tools */}
@@ -615,6 +670,96 @@ export const VocalLabApp: React.FC = () => {
         {/* Hidden file inputs */}
         <input ref={midiFileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleMidiImport} />
         <input ref={sessionFileInputRef} type="file" accept=".json" hidden onChange={handleSessionImport} />
+        <input ref={mp3FileInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac" hidden onChange={handleMp3Upload} />
+
+        {/* MP3 TO MIDI CONVERTER MODAL */}
+        {showMp3Converter && (
+            <div className="absolute top-24 left-1/2 -translate-x-1/2 w-[90vw] max-w-md bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-[200] overflow-hidden animate-fade-in">
+                <div className="flex items-center justify-between p-4 border-b border-white/10">
+                    <h3 className="font-bold text-white flex items-center gap-2">
+                        <span className="text-purple-400">●</span> MP3 to MIDI Converter
+                    </h3>
+                    <button onClick={() => setShowMp3Converter(false)} className="text-zinc-500 hover:text-white">✕</button>
+                </div>
+                
+                <div className="p-4 space-y-4">
+                    {isConverting ? (
+                        <div className="space-y-3">
+                            <div className="text-sm text-zinc-400 text-center">Converting audio to MIDI...</div>
+                            <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+                                <div 
+                                    className="h-full bg-gradient-to-r from-purple-500 to-indigo-500 transition-all duration-300"
+                                    style={{ width: `${conversionProgress}%` }}
+                                />
+                            </div>
+                            <div className="text-xs text-zinc-500 text-center">{conversionProgress}%</div>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="text-sm text-zinc-400">
+                                Upload an audio file to convert it to MIDI. Works best with:
+                                <ul className="mt-2 text-xs text-zinc-500 list-disc list-inside space-y-1">
+                                    <li>Single melody lines (monophonic)</li>
+                                    <li>Clear, isolated instruments</li>
+                                    <li>Piano or vocal recordings</li>
+                                </ul>
+                            </div>
+                            
+                            <button 
+                                onClick={() => mp3FileInputRef.current?.click()}
+                                className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-medium transition-all flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                </svg>
+                                Upload Audio File
+                            </button>
+                            
+                            <div className="text-[10px] text-zinc-600 text-center">
+                                Supports: MP3, WAV, M4A, OGG, FLAC
+                            </div>
+                        </>
+                    )}
+                    
+                    {/* Converted MIDI Files with Export */}
+                    {midiFiles.filter(m => m.name.includes('(Converted)')).length > 0 && (
+                        <div className="border-t border-white/10 pt-4 mt-4">
+                            <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Converted Files</div>
+                            <div className="space-y-2 max-h-40 overflow-y-auto">
+                                {midiFiles.filter(m => m.name.includes('(Converted)')).map(midi => (
+                                    <div key={midi.id} className="flex items-center justify-between p-2 bg-white/5 rounded-lg">
+                                        <div className="text-sm text-white truncate flex-1">{midi.name}</div>
+                                        <div className="flex gap-1">
+                                            <button 
+                                                onClick={() => handleExportConvertedMidi(midi)}
+                                                className="p-1.5 hover:bg-white/10 rounded text-zinc-400 hover:text-white"
+                                                title="Export as .mid file"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                                </svg>
+                                            </button>
+                                            <button 
+                                                onClick={async () => {
+                                                    await SessionRepository.deleteMidiFile(midi.id);
+                                                    setMidiFiles(prev => prev.filter(m => m.id !== midi.id));
+                                                }}
+                                                className="p-1.5 hover:bg-red-500/20 rounded text-zinc-400 hover:text-red-400"
+                                                title="Delete"
+                                            >
+                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        )}
 
         {/* AUDIO SETTINGS (Top Right) */}
         <div className="absolute top-4 right-4 z-[100]">
