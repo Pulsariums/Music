@@ -6,7 +6,6 @@ import { VocalLabApp } from './apps/VocalLab/VocalLabApp';
 import { MidiEditorApp } from './apps/MidiEditor/MidiEditorApp';
 import { AppID } from './types';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { DebugConsole } from './components/debug/DebugConsole';
 import { Logger } from './lib/logger';
 
 const App: React.FC = () => {
@@ -36,7 +35,6 @@ const App: React.FC = () => {
       <Shell activeApp={activeApp} onNavigate={setActiveApp}>
         {renderActiveApp()}
       </Shell>
-      <DebugConsole activeApp={activeApp} />
     </ErrorBoundary>
   );
 };
