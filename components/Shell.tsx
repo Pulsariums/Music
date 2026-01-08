@@ -11,7 +11,7 @@ export const Shell: React.FC<ShellProps> = ({ children, activeApp, onNavigate })
   const isDashboard = activeApp === AppID.DASHBOARD;
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans overflow-hidden">
+    <div className="h-screen bg-black text-white font-sans overflow-hidden flex flex-col">
       
       {/* Dynamic Background */}
       <div className={`fixed inset-0 transition-opacity duration-1000 ${isDashboard ? 'opacity-100' : 'opacity-20'}`}>
@@ -19,7 +19,7 @@ export const Shell: React.FC<ShellProps> = ({ children, activeApp, onNavigate })
       </div>
 
       {/* Main Content */}
-      <main className="relative z-10 w-full h-full">
+      <main className="relative z-10 w-full flex-1">
          {children}
       </main>
 
