@@ -647,7 +647,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
         </div>
 
         {/* 2. TOP TOOLBAR */}
-        <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[100] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-full overflow-x-auto">
+        <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[1000] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-full overflow-x-auto">
             
             {/* Add Piano Button */}
             <button 
@@ -918,7 +918,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
         )}
 
         {/* AUDIO SETTINGS & DEBUG (Top Right) */}
-        <div className="absolute top-4 right-4 z-[100] flex gap-2">
+        <div className="absolute top-4 right-4 z-[1000] flex gap-2">
             {/* Debug Console Toggle */}
             <button 
                 onClick={() => setShowDebugConsole(!showDebugConsole)}
@@ -940,7 +940,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
         {/* DEBUG CONSOLE PANEL */}
         {showDebugConsole && (
-            <div className="absolute top-16 right-4 w-[90vw] max-w-md bg-black/95 backdrop-blur-xl border border-red-500/30 rounded-xl shadow-2xl z-[200] overflow-hidden">
+            <div className="absolute top-16 right-4 w-[90vw] max-w-md bg-black/95 backdrop-blur-xl border border-red-500/30 rounded-xl shadow-2xl z-[1100] overflow-hidden">
                 <div className="flex items-center justify-between p-3 border-b border-white/10 bg-red-500/10">
                     <h3 className="font-bold text-red-400 flex items-center gap-2 text-sm">
                         <span>🐛</span> Debug Console
@@ -974,7 +974,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
         )}
 
         {showAudioSettings && (
-            <div className="absolute top-16 right-4 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3 z-[100]">
+            <div className="absolute top-16 right-4 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3 z-[1100]">
                 <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
                     
                     {/* Soft Mode Toggle */}

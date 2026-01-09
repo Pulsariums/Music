@@ -64,6 +64,11 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const midiTimeoutRefs = useRef<number[]>([]);
   const midiStartTimeRef = useRef<number>(0);
   const midiAnimationRef = useRef<number>(0);
+  
+  // Refs to avoid stale closure in animation loop
+  const isPlayingMidiRef = useRef(false);
+  const currentMidiRef = useRef<SongSequence | null>(null);
+  const showFallingNotesRef = useRef(true);
 
   // Training Mode State
   const [showFallingNotes, setShowFallingNotes] = useState(true); // Visibility toggle for falling notes overlay
@@ -75,6 +80,11 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const resizeRef = useRef<{ startX: number, startY: number, initW: number, initH: number } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fallingNotesCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Sync refs with state to avoid stale closures in animation loop
+  useEffect(() => { isPlayingMidiRef.current = isPlayingMidi; }, [isPlayingMidi]);
+  useEffect(() => { currentMidiRef.current = currentMidi; }, [currentMidi]);
+  useEffect(() => { showFallingNotesRef.current = showFallingNotes; }, [showFallingNotes]);
 
   // Generate Local Keyboard (Standard 88 keys range effectively)
   const notes = useMemo(() => generateKeyboard(1, 7), []);
@@ -189,6 +199,11 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   // --- MIDI PLAYBACK WITH FALLING NOTES ---
   const playMidi = (sequence: SongSequence) => {
     stopMidi(); // Stop any current playback
+    
+    // Update refs IMMEDIATELY (before state updates) to avoid stale closure issues
+    currentMidiRef.current = sequence;
+    isPlayingMidiRef.current = true;
+    
     setCurrentMidi(sequence);
     setIsPlayingMidi(true);
     setMidiPlaybackTime(0);
@@ -220,6 +235,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     // Schedule playback end
     const maxTime = Math.max(...sequence.events.map(e => e.startTime + e.duration));
     const endTimeout = window.setTimeout(() => {
+      isPlayingMidiRef.current = false;
+      currentMidiRef.current = null;
       setIsPlayingMidi(false);
       setCurrentMidi(null);
       setMidiPlaybackTime(0);
@@ -227,14 +244,21 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     }, maxTime * 1000 * tempoMultiplier + 100);
     midiTimeoutRefs.current.push(endTimeout);
     
-    // Start falling notes animation
-    startFallingNotesAnimation(tempoMultiplier);
+    // Start falling notes animation after a short delay to allow canvas to mount
+    setTimeout(() => {
+      startFallingNotesAnimation(tempoMultiplier);
+    }, 50);
   };
   
   const stopMidi = () => {
     midiTimeoutRefs.current.forEach(t => clearTimeout(t));
     midiTimeoutRefs.current = [];
     cancelAnimationFrame(midiAnimationRef.current);
+    
+    // Update refs immediately
+    isPlayingMidiRef.current = false;
+    currentMidiRef.current = null;
+    
     setIsPlayingMidi(false);
     setCurrentMidi(null);
     setMidiPlaybackTime(0);
@@ -252,16 +276,17 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     }
   };
   
-  // Falling notes animation
+  // Falling notes animation - uses refs to avoid stale closure
   const startFallingNotesAnimation = (tempoMultiplier: number) => {
     const animate = () => {
-      if (!isPlayingMidi && !currentMidi) return;
+      // Use refs instead of state to avoid stale closure
+      if (!isPlayingMidiRef.current && !currentMidiRef.current) return;
       
       const elapsed = (Date.now() - midiStartTimeRef.current) / 1000 / tempoMultiplier;
       setMidiPlaybackTime(elapsed);
       
-      // Only render if falling notes are visible
-      if (showFallingNotes) {
+      // Only render if falling notes are visible (use ref)
+      if (showFallingNotesRef.current) {
         renderFallingNotes(elapsed, tempoMultiplier);
       }
       
@@ -275,7 +300,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const renderFallingNotes = (currentTime: number, tempoMultiplier: number) => {
     const canvas = fallingNotesCanvasRef.current;
     const scrollContainer = scrollContainerRef.current;
-    if (!canvas || !scrollContainer || !currentMidi) return;
+    const midi = currentMidiRef.current; // Use ref instead of state
+    if (!canvas || !scrollContainer || !midi) return;
     
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -345,7 +371,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     };
     
     // Render each note
-    currentMidi.events.forEach(event => {
+    midi.events.forEach(event => {
       const noteEnd = event.startTime + event.duration;
       
       // Only render notes that are visible in the time window
