@@ -65,6 +65,11 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const midiStartTimeRef = useRef<number>(0);
   const midiAnimationRef = useRef<number>(0);
 
+  // Training Mode State
+  const [showFallingNotes, setShowFallingNotes] = useState(true); // Visibility toggle for falling notes overlay
+  // TODO: trainingModeEnabled will pause MIDI playback until user presses the correct key
+  const [trainingModeEnabled, setTrainingModeEnabled] = useState(false); // Wait for user input mode (not yet implemented)
+
   // Refs for interactions
   const dragRef = useRef<{ startX: number, startY: number, initX: number, initY: number } | null>(null);
   const resizeRef = useRef<{ startX: number, startY: number, initW: number, initH: number } | null>(null);
@@ -255,7 +260,10 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       const elapsed = (Date.now() - midiStartTimeRef.current) / 1000 / tempoMultiplier;
       setMidiPlaybackTime(elapsed);
       
-      renderFallingNotes(elapsed, tempoMultiplier);
+      // Only render if falling notes are visible
+      if (showFallingNotes) {
+        renderFallingNotes(elapsed, tempoMultiplier);
+      }
       
       midiAnimationRef.current = requestAnimationFrame(animate);
     };
@@ -470,8 +478,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         {/* CONTENT: KEYBOARD */}
         <div className="flex-1 relative bg-black/40 group/keyboard overflow-hidden rounded-b-2xl">
             
-            {/* FALLING NOTES CANVAS - Overlays the keyboard */}
-            {isPlayingMidi && currentMidi && (
+            {/* FALLING NOTES CANVAS - Overlays the keyboard (only when enabled) */}
+            {isPlayingMidi && currentMidi && showFallingNotes && (
               <canvas
                 ref={fallingNotesCanvasRef}
                 className="absolute inset-0 z-40 pointer-events-none"
@@ -609,6 +617,36 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                         <button onClick={() => setTranspose(0)} className="flex-1 hover:bg-zinc-700 rounded text-xs py-1 text-zinc-500 border-l border-r border-black/20">0</button>
                         <button onClick={() => setTranspose(t => t+1)} className="flex-1 hover:bg-zinc-700 rounded text-xs py-1 text-zinc-400">+</button>
                     </div>
+                 </div>
+
+                 {/* Training Mode Section */}
+                 <div className="border-t border-white/10 pt-3">
+                    <div className="text-[10px] font-bold text-zinc-500 uppercase mb-2">Training Mode</div>
+                    
+                    {/* Falling Notes Toggle */}
+                    <div className="flex items-center justify-between mb-2">
+                       <span className="text-xs text-zinc-400">Falling Notes</span>
+                       <button 
+                         onClick={() => setShowFallingNotes(!showFallingNotes)}
+                         className={`relative w-10 h-5 rounded-full transition-colors ${showFallingNotes ? 'bg-indigo-500' : 'bg-zinc-700'}`}
+                       >
+                         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${showFallingNotes ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                       </button>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 mb-2">Shows visual guides when playing MIDI files</p>
+                    
+                    {/* Training Mode Toggle */}
+                    <div className="flex items-center justify-between">
+                       <span className="text-xs text-zinc-400">Wait for Input</span>
+                       <button 
+                         onClick={() => setTrainingModeEnabled(!trainingModeEnabled)}
+                         className={`relative w-10 h-5 rounded-full transition-colors ${trainingModeEnabled ? 'bg-green-500' : 'bg-zinc-700'}`}
+                         title="When enabled, MIDI playback will wait for you to press the correct key"
+                       >
+                         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${trainingModeEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                       </button>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 mt-1">Pauses until you press the correct key (coming soon)</p>
                  </div>
              </div>
         )}
