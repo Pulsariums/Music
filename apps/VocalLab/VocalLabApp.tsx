@@ -647,7 +647,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
         </div>
 
         {/* 2. TOP TOOLBAR */}
-        <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[1000] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-full overflow-x-auto">
+        <div className="absolute top-2 left-2 right-14 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[1000] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-[calc(100%-4rem)] sm:max-w-full overflow-x-auto">
             
             {/* Add Piano Button */}
             <button 

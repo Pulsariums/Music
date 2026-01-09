@@ -69,6 +69,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const isPlayingMidiRef = useRef(false);
   const currentMidiRef = useRef<SongSequence | null>(null);
   const showFallingNotesRef = useRef(true);
+  const keyWidthRef = useRef(keyWidth);
+  const sizeRef = useRef(size);
 
   // Training Mode State
   const [showFallingNotes, setShowFallingNotes] = useState(true); // Visibility toggle for falling notes overlay
@@ -85,6 +87,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   useEffect(() => { isPlayingMidiRef.current = isPlayingMidi; }, [isPlayingMidi]);
   useEffect(() => { currentMidiRef.current = currentMidi; }, [currentMidi]);
   useEffect(() => { showFallingNotesRef.current = showFallingNotes; }, [showFallingNotes]);
+  useEffect(() => { keyWidthRef.current = keyWidth; }, [keyWidth]);
+  useEffect(() => { sizeRef.current = size; }, [size]);
 
   // Generate Local Keyboard (Standard 88 keys range effectively)
   const notes = useMemo(() => generateKeyboard(1, 7), []);
@@ -296,7 +300,7 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     midiAnimationRef.current = requestAnimationFrame(animate);
   };
   
-  // Render falling notes on canvas
+  // Render falling notes on canvas - notes fall from above the piano and land on the keys
   const renderFallingNotes = (currentTime: number, tempoMultiplier: number) => {
     const canvas = fallingNotesCanvasRef.current;
     const scrollContainer = scrollContainerRef.current;
@@ -306,23 +310,30 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
+    // Use refs for current values (avoid stale closures)
+    const currentKeyWidth = keyWidthRef.current;
+    const currentSize = sizeRef.current;
+    
     // Get visible width and actual scroll position
-    const visibleWidth = size.width;
-    const canvasHeight = size.height - 50; // Leave space for header
+    const visibleWidth = currentSize.width;
+    const pianoKeyboardHeight = currentSize.height - 50; // Height of the keyboard area (below header)
     const scrollOffset = scrollContainer.scrollLeft;
     
-    // Set canvas size to match VISIBLE area (not scroll area)
+    // Set canvas size to match VISIBLE area
     canvas.width = visibleWidth;
-    canvas.height = canvasHeight;
+    canvas.height = pianoKeyboardHeight;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Calculate visible time window (notes fall from top)
-    const lookAheadTime = 3; // Show notes 3 seconds ahead
-    const pixelsPerSecond = (canvasHeight) / lookAheadTime;
+    // Falling notes configuration
+    // Notes should fall from above the piano and "hit" the keys at the bottom
+    // The "hit line" is where notes reach when it's time to play them
+    const hitLineY = pianoKeyboardHeight; // Notes hit at the very bottom
+    const lookAheadTime = 2.5; // Show notes 2.5 seconds before they should be played
+    const pixelsPerSecond = pianoKeyboardHeight / lookAheadTime; // Speed of falling
     
-    // Map MIDI notes to keyboard positions - calculate based on note names
-    // C1 starts at position 0, each white key adds keyWidth
+    // Map MIDI notes to keyboard positions - must match the actual keyboard rendering
+    // The keyboard starts at px-4 (16px) padding and uses the current keyWidth
     const getNotePosition = (noteName: string): { x: number; width: number; isBlack: boolean } | null => {
       // Parse note name (e.g., "C4", "C#4", "Db4")
       const match = noteName.match(/^([A-G])([#b]?)(\d+)$/);
@@ -332,7 +343,6 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       const octave = parseInt(octaveStr, 10);
       
       // White key notes: C, D, E, F, G, A, B
-      // Black key notes: C#/Db, D#/Eb, F#/Gb, G#/Ab, A#/Bb
       const whiteKeyOrder = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
       const isBlack = accidental === '#' || accidental === 'b';
       
@@ -342,26 +352,33 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         if (accidental === '#') {
           baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
         } else {
-          // Flat - it's the note before
-          const flatIndex = whiteKeyOrder.indexOf(letter);
-          baseWhiteKeyIndex = flatIndex - 1;
-          if (baseWhiteKeyIndex < 0) baseWhiteKeyIndex = 6; // Bb is before B
+          // Flat - use the equivalent sharp
+          const flatToSharp: Record<string, string> = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
+          const sharpEquiv = flatToSharp[letter + 'b'];
+          if (sharpEquiv) {
+            baseWhiteKeyIndex = whiteKeyOrder.indexOf(sharpEquiv[0]);
+          } else {
+            baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter) - 1;
+            if (baseWhiteKeyIndex < 0) baseWhiteKeyIndex = 6;
+          }
         }
       } else {
         baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
       }
       
       // Calculate absolute white key position from C1
+      // The keyboard renders octaves 1-7 (generateKeyboard(1, 7))
       const octaveOffset = (octave - 1) * 7; // 7 white keys per octave
       const whiteKeyPosition = octaveOffset + baseWhiteKeyIndex;
       
-      // Calculate X position
-      const startPadding = 16; // Same as keyboard padding
-      const whiteKeyWidth = keyWidth;
-      const blackKeyWidth = keyWidth * 0.65;
+      // Calculate X position matching the keyboard layout exactly
+      const startPadding = 16; // px-4 = 16px padding in the keyboard
+      const whiteKeyWidth = currentKeyWidth;
+      const blackKeyWidth = currentKeyWidth * 0.65;
       
       if (isBlack) {
-        // Black key overlaps between two white keys
+        // Black key is positioned between two white keys, offset by 67.5% of the white key
+        // This matches: style={{ transform: 'translateX(-50%)' }} on the black key container
         const x = startPadding + (whiteKeyPosition * whiteKeyWidth) + (whiteKeyWidth * 0.675);
         return { x, width: blackKeyWidth, isBlack: true };
       } else {
@@ -370,62 +387,76 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       }
     };
     
-    // Render each note
+    // Render each note - notes fall from top (off-screen) toward the bottom (hit line)
     midi.events.forEach(event => {
       const noteEnd = event.startTime + event.duration;
       
       // Only render notes that are visible in the time window
-      if (noteEnd >= currentTime - 0.5 && event.startTime <= currentTime + lookAheadTime) {
+      // Notes before currentTime-0.5 have already passed, notes after currentTime+lookAheadTime are too far
+      if (noteEnd >= currentTime - 0.3 && event.startTime <= currentTime + lookAheadTime) {
         const notePos = getNotePosition(event.noteName);
         if (!notePos) return;
         
-        // Calculate Y position (notes fall down toward bottom)
+        // Calculate Y position
+        // timeUntilNote > 0: note is in the future, should be above the hit line
+        // timeUntilNote < 0: note is being played/has passed, should be at/below hit line
         const timeUntilNote = event.startTime - currentTime;
-        const noteHeight = Math.max(4, event.duration * pixelsPerSecond);
         
-        // Y position: 0 = top of canvas, notes at currentTime should be at bottom
-        // Notes coming up should be at top and fall down
-        const yBottom = canvasHeight - (timeUntilNote * pixelsPerSecond);
-        const yTop = yBottom - noteHeight;
+        // Note height based on duration (minimum 8px for visibility)
+        const noteHeight = Math.max(8, event.duration * pixelsPerSecond);
+        
+        // Y position: the BOTTOM of the note bar
+        // When timeUntilNote = 0, the bottom of the note should be at hitLineY
+        // When timeUntilNote = lookAheadTime, the bottom should be at Y = 0 (top of canvas)
+        const noteBottomY = hitLineY - (timeUntilNote * pixelsPerSecond);
+        const noteTopY = noteBottomY - noteHeight;
         
         // Adjust X position for scroll offset
         const x = notePos.x - scrollOffset;
         
-        // Only draw if visible in viewport
+        // Only draw if visible in viewport (horizontally)
         if (x + notePos.width > 0 && x < visibleWidth) {
-          // Determine color based on note type and state
+          // Determine if note is currently playing
           const isPlaying = currentTime >= event.startTime && currentTime <= noteEnd;
           
-          // Reset shadow for clean drawing
+          // Clamp note to visible canvas area
+          const drawY = Math.max(-noteHeight, noteTopY); // Can start slightly above canvas
+          const drawHeight = Math.min(noteBottomY, pianoKeyboardHeight) - Math.max(0, noteTopY);
+          
+          // Skip if completely off-screen
+          if (drawHeight <= 0 || noteBottomY < 0) return;
+          
+          // Reset shadow
           ctx.shadowBlur = 0;
           ctx.shadowColor = 'transparent';
           
+          // Color based on key type and playing state
           if (notePos.isBlack) {
-            ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Indigo for black keys
+            ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Brighter when playing
           } else {
             ctx.fillStyle = isPlaying ? '#a78bfa' : '#7c3aed'; // Purple for white keys
           }
           
-          // Draw rounded rectangle
-          const radius = 4;
-          const y = Math.max(0, yTop);
-          const height = Math.min(noteHeight, canvasHeight - y);
+          // Draw the note bar
+          const padding = 2; // Small padding on sides
+          const radius = Math.min(4, notePos.width / 4);
+          const drawX = x + padding;
+          const drawWidth = notePos.width - padding * 2;
+          const finalY = Math.max(0, noteTopY);
           
-          if (height > 0 && y < canvasHeight) {
+          ctx.beginPath();
+          ctx.roundRect(drawX, finalY, drawWidth, drawHeight, radius);
+          ctx.fill();
+          
+          // Add glow effect for notes being played
+          if (isPlaying) {
+            ctx.shadowColor = '#a78bfa';
+            ctx.shadowBlur = 12;
+            ctx.fillStyle = 'rgba(167, 139, 250, 0.5)';
             ctx.beginPath();
-            ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
+            ctx.roundRect(drawX, finalY, drawWidth, drawHeight, radius);
             ctx.fill();
-            
-            // Add glow effect for playing notes
-            if (isPlaying) {
-              ctx.shadowColor = '#a78bfa';
-              ctx.shadowBlur = 15;
-              ctx.fillStyle = 'rgba(167, 139, 250, 0.6)';
-              ctx.beginPath();
-              ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
-              ctx.fill();
-              ctx.shadowBlur = 0;
-            }
+            ctx.shadowBlur = 0;
           }
         }
       }
