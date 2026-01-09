@@ -54,6 +54,10 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   const [isConverting, setIsConverting] = useState(false);
   const mp3FileInputRef = useRef<HTMLInputElement>(null);
 
+  // Debug Console (for mobile debugging)
+  const [showDebugConsole, setShowDebugConsole] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<Array<{level: string, msg: string, time: string}>>([]);
+
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,6 +69,21 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   const sessionFileInputRef = useRef<HTMLInputElement>(null);
   
   const playingSequenceNotes = useRef<Map<number, number>>(new Map());
+
+  // Debug console configuration
+  const DEBUG_LOG_LIMIT = 50;
+
+  // Subscribe to Logger for debug console
+  useEffect(() => {
+    const unsubscribe = Logger.subscribe((logs) => {
+      setDebugLogs(logs.slice(0, DEBUG_LOG_LIMIT).map(l => ({
+        level: l.level,
+        msg: l.message,
+        time: new Date(l.timestamp).toLocaleTimeString()
+      })));
+    });
+    return () => unsubscribe();
+  }, []);
 
   // --- WORKSPACE MANAGEMENT ---
   const addPiano = () => {
@@ -373,7 +392,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
     } catch(err) { 
         Logger.log('error', `MIDI import failed (${source})`, {}, err as Error);
         const errorMessage = (err as Error).message || 'Unknown error';
-        alert(`Failed to import MIDI file: ${errorMessage}\n\nPlease check the browser console for details.`); 
+        alert(`Failed to import MIDI file: ${errorMessage}\n\nOpen the Debug Console (🐛 button) for details.`); 
         return false;
     }
   };
@@ -681,7 +700,6 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             <button onClick={() => fileInputRef.current?.click()} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0" title="Import MIDI">
                 <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
             </button>
-            <input ref={fileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleFileUpload} />
 
             {currentSequence && (
                 <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl flex-shrink-0 ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
@@ -780,10 +798,35 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             </div>
         )}
 
-        {/* Hidden file inputs */}
-        <input ref={midiFileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleMidiImport} />
-        <input ref={sessionFileInputRef} type="file" accept=".json" hidden onChange={handleSessionImport} />
-        <input ref={mp3FileInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac" hidden onChange={handleMp3Upload} />
+        {/* Hidden file inputs - using hidden for proper hiding */}
+        <input 
+            ref={fileInputRef} 
+            type="file" 
+            accept=".mid,.midi,audio/midi,audio/x-midi" 
+            hidden
+            onChange={handleFileUpload} 
+        />
+        <input 
+            ref={midiFileInputRef} 
+            type="file" 
+            accept=".mid,.midi,audio/midi,audio/x-midi" 
+            hidden
+            onChange={handleMidiImport} 
+        />
+        <input 
+            ref={sessionFileInputRef} 
+            type="file" 
+            accept=".json,application/json" 
+            hidden
+            onChange={handleSessionImport} 
+        />
+        <input 
+            ref={mp3FileInputRef} 
+            type="file" 
+            accept=".mp3,.wav,.m4a,.ogg,.flac,audio/*" 
+            hidden
+            onChange={handleMp3Upload} 
+        />
 
         {/* MP3 TO MIDI CONVERTER MODAL */}
         {showMp3Converter && (
@@ -874,8 +917,18 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             </div>
         )}
 
-        {/* AUDIO SETTINGS (Top Right) */}
-        <div className="absolute top-4 right-4 z-[100]">
+        {/* AUDIO SETTINGS & DEBUG (Top Right) */}
+        <div className="absolute top-4 right-4 z-[100] flex gap-2">
+            {/* Debug Console Toggle */}
+            <button 
+                onClick={() => setShowDebugConsole(!showDebugConsole)}
+                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showDebugConsole ? 'bg-red-500/30 text-red-400' : 'bg-black/60 hover:bg-black/80 text-zinc-400 hover:text-white'} backdrop-blur-xl border border-white/10`}
+                title="Debug Console"
+            >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" /></svg>
+            </button>
+            
+            {/* Audio Settings Toggle */}
             <button 
                 onClick={() => setShowAudioSettings(!showAudioSettings)}
                 className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showAudioSettings ? 'bg-indigo-500/30 text-indigo-400' : 'bg-black/60 hover:bg-black/80 text-zinc-400 hover:text-white'} backdrop-blur-xl border border-white/10`}
@@ -883,10 +936,46 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
             </button>
+        </div>
 
-            {showAudioSettings && (
-                <div className="absolute top-12 right-0 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3">
-                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
+        {/* DEBUG CONSOLE PANEL */}
+        {showDebugConsole && (
+            <div className="absolute top-16 right-4 w-[90vw] max-w-md bg-black/95 backdrop-blur-xl border border-red-500/30 rounded-xl shadow-2xl z-[200] overflow-hidden">
+                <div className="flex items-center justify-between p-3 border-b border-white/10 bg-red-500/10">
+                    <h3 className="font-bold text-red-400 flex items-center gap-2 text-sm">
+                        <span>🐛</span> Debug Console
+                    </h3>
+                    <div className="flex gap-2">
+                        <button 
+                            onClick={() => Logger.clear()} 
+                            className="text-xs px-2 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30"
+                        >
+                            Clear
+                        </button>
+                        <button onClick={() => setShowDebugConsole(false)} className="text-zinc-500 hover:text-white">✕</button>
+                    </div>
+                </div>
+                <div className="max-h-[50vh] overflow-y-auto p-2 font-mono text-xs">
+                    {debugLogs.length === 0 ? (
+                        <div className="text-center text-zinc-500 py-4">No logs yet. Try importing a MIDI file or recording.</div>
+                    ) : (
+                        debugLogs.map((log, i) => (
+                            <div key={i} className={`py-1 px-2 rounded mb-1 ${
+                                log.level === 'error' ? 'bg-red-500/20 text-red-300' :
+                                log.level === 'warn' ? 'bg-yellow-500/20 text-yellow-300' :
+                                'bg-white/5 text-zinc-300'
+                            }`}>
+                                <span className="text-zinc-500">[{log.time}]</span> {log.msg}
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        )}
+
+        {showAudioSettings && (
+            <div className="absolute top-16 right-4 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3 z-[100]">
+                <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
                     
                     {/* Soft Mode Toggle */}
                     <button 
@@ -923,7 +1012,6 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
                     </button>
                 </div>
             )}
-        </div>
 
         {/* 3. RECORDINGS LIBRARY MODAL */}
         {showLibrary && (
