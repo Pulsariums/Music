@@ -29,6 +29,11 @@ class FMAudioCore {
   private static readonly REVERB_DECAY_EXPONENT = 2.5; // Controls reverb decay curve shape
   private static readonly REVERB_NOISE_GATE = 0.02; // Below this level, set reverb tail to 0
   private static readonly REVERB_OUTPUT_LEVEL = 0.7; // Reduce reverb level to prevent noise buildup
+  
+  // Auto-suspend timer to stop AudioContext when idle (prevents background hiss)
+  private static readonly AUTO_SUSPEND_DELAY = 2000; // 2 seconds of silence before suspending
+  private autoSuspendTimeout: ReturnType<typeof setTimeout> | null = null;
+  private isRecording: boolean = false; // Track if recording is active
 
   // Reverb (Algorithmic)
   private convolver: ConvolverNode | null = null;
@@ -43,10 +48,10 @@ class FMAudioCore {
 
   // Polyphony management - prevent clipping when many notes play
   private maxPolyphony: number = 32;
-  private baseGain: number = 0.22; // Slightly reduced per-voice base gain for cleaner sound
+  private baseGain: number = 0.20; // Reduced per-voice base gain for cleaner sound and less CPU
 
   constructor() {
-    Logger.log('info', 'FMAudioCore: Engine v5 Initialized');
+    Logger.log('info', 'FMAudioCore: Engine v5.1 Initialized (with auto-suspend)');
   }
 
   public async init(options?: AudioContextOptions) {
@@ -108,6 +113,13 @@ class FMAudioCore {
   // --- RECORDING ---
   public async startRecording(): Promise<boolean> {
     try {
+      this.isRecording = true; // Track recording state
+      // Cancel auto-suspend while recording
+      if (this.autoSuspendTimeout) {
+        clearTimeout(this.autoSuspendTimeout);
+        this.autoSuspendTimeout = null;
+      }
+      
       // Ensure audio context is initialized
       if (!this.ctx) {
         await this.init();
@@ -121,6 +133,7 @@ class FMAudioCore {
       // Wait a bit for mediaDest to be ready
       if (!this.mediaDest) {
         Logger.log('error', 'Recording failed: mediaDest not available after init');
+        this.isRecording = false;
         return false;
       }
       
@@ -170,6 +183,10 @@ class FMAudioCore {
   }
 
   public async stopRecording(): Promise<Blob | null> {
+    this.isRecording = false; // Clear recording state
+    // Schedule auto-suspend check
+    this.scheduleAutoSuspend();
+    
     if (!this.mediaRecorder || this.mediaRecorder.state === 'inactive') return null;
     return new Promise((resolve) => {
         if (!this.mediaRecorder) return resolve(null);
@@ -220,6 +237,12 @@ class FMAudioCore {
   public playNote(freq: number, preset: InstrumentPreset, panPosition?: number) {
     if (!this.ctx) { this.init(); return; }
     if (this.ctx.state === 'suspended') this.ctx.resume();
+    
+    // Cancel any pending auto-suspend since we're playing a note
+    if (this.autoSuspendTimeout) {
+      clearTimeout(this.autoSuspendTimeout);
+      this.autoSuspendTimeout = null;
+    }
 
     this.stopNote(freq, true);
 
@@ -381,6 +404,33 @@ class FMAudioCore {
     });
 
     this.activeVoices.delete(freq);
+    
+    // Schedule auto-suspend check after note is released
+    this.scheduleAutoSuspend();
+  }
+  
+  // Auto-suspend AudioContext when idle to prevent background hiss from phone speakers
+  private scheduleAutoSuspend() {
+    // Don't suspend if recording is active
+    if (this.isRecording) return;
+    
+    // Clear any existing timeout
+    if (this.autoSuspendTimeout) {
+      clearTimeout(this.autoSuspendTimeout);
+    }
+    
+    // Schedule suspend check
+    this.autoSuspendTimeout = setTimeout(() => {
+      // Only suspend if no active voices and not recording
+      if (this.activeVoices.size === 0 && !this.isRecording && this.ctx && this.ctx.state === 'running') {
+        this.ctx.suspend().then(() => {
+          Logger.log('info', 'AudioContext auto-suspended (idle)');
+        }).catch(() => {
+          // Ignore suspend errors
+        });
+      }
+      this.autoSuspendTimeout = null;
+    }, FMAudioCore.AUTO_SUSPEND_DELAY);
   }
 
   public resume() {
