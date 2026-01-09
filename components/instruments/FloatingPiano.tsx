@@ -392,9 +392,14 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     // Falling notes configuration
     // Notes should fall from above the piano and "hit" the keys at the bottom
     // The "hit line" is where notes reach when it's time to play them
-    const hitLineY = pianoKeyboardHeight; // Notes hit at the very bottom
-    const lookAheadTime = 2.5; // Show notes 2.5 seconds before they should be played
+    // White keys hit at the very bottom, black keys hit at about 65% height (since black keys are shorter)
+    const whiteKeyHitLineY = pianoKeyboardHeight; // White keys hit at the very bottom
+    const blackKeyHitLineY = pianoKeyboardHeight * 0.65; // Black keys are about 65% the height of white keys
+    const lookAheadTime = 3.0; // Show notes 3 seconds before they should be played (increased for more visibility)
     const pixelsPerSecond = pianoKeyboardHeight / lookAheadTime; // Speed of falling
+    
+    // Note height scale factor - reduce heights to show more notes at once
+    const noteHeightScale = 0.6; // 60% of original height
     
     // Map MIDI notes to keyboard positions - must match the actual keyboard rendering
     // The keyboard starts at px-4 (16px) padding and uses the current keyWidth
@@ -461,13 +466,16 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         const notePos = getNotePosition(event.noteName);
         if (!notePos) return;
         
+        // Use different hit lines for black and white keys
+        const hitLineY = notePos.isBlack ? blackKeyHitLineY : whiteKeyHitLineY;
+        
         // Calculate Y position
         // timeUntilNote > 0: note is in the future, should be above the hit line
         // timeUntilNote < 0: note is being played/has passed, should be at/below hit line
         const timeUntilNote = event.startTime - currentTime;
         
-        // Note height based on duration (minimum 8px for visibility)
-        const noteHeight = Math.max(8, event.duration * pixelsPerSecond);
+        // Note height based on duration (minimum 6px for visibility, scaled down for more visibility)
+        const noteHeight = Math.max(6, event.duration * pixelsPerSecond * noteHeightScale);
         
         // Y position: the BOTTOM of the note bar
         // When timeUntilNote = 0, the bottom of the note should be at hitLineY
