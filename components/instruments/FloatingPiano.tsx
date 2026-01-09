@@ -787,9 +787,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <button 
                 onMouseDown={(e) => { e.stopPropagation(); handleScroll('left'); }}
                 onTouchStart={(e) => { e.stopPropagation(); handleScroll('left'); }}
-                className="no-drag absolute left-0 top-0 bottom-0 w-10 z-[60] bg-gradient-to-r from-black/80 to-transparent flex items-center justify-center text-white/50 hover:text-white hover:bg-black/60 transition-all opacity-0 group-hover/keyboard:opacity-100"
+                className="no-drag absolute left-0 top-1/2 -translate-y-1/2 z-[60] ml-1 w-8 h-16 rounded-full bg-zinc-800/70 backdrop-blur-sm border border-zinc-700/50 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-700/90 hover:border-zinc-600 transition-all shadow-lg active:scale-95"
             >
-                <svg className="w-8 h-8 drop-shadow-lg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M15 19l-7-7 7-7" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
             </button>
 
             {/* SCROLL AREA */}
@@ -841,9 +841,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <button 
                 onMouseDown={(e) => { e.stopPropagation(); handleScroll('right'); }}
                 onTouchStart={(e) => { e.stopPropagation(); handleScroll('right'); }}
-                className="no-drag absolute right-0 top-0 bottom-0 w-10 z-[60] bg-gradient-to-l from-black/80 to-transparent flex items-center justify-center text-white/50 hover:text-white hover:bg-black/60 transition-all opacity-0 group-hover/keyboard:opacity-100"
+                className="no-drag absolute right-0 top-1/2 -translate-y-1/2 z-[60] mr-1 w-8 h-16 rounded-full bg-zinc-800/70 backdrop-blur-sm border border-zinc-700/50 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-700/90 hover:border-zinc-600 transition-all shadow-lg active:scale-95"
             >
-                <svg className="w-8 h-8 drop-shadow-lg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M9 5l7 7-7 7" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
             </button>
         </div>
 
