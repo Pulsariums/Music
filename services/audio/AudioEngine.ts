@@ -12,6 +12,7 @@ class FMAudioCore {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private limiter: DynamicsCompressorNode | null = null;
+  private dcBlocker: BiquadFilterNode | null = null; // High-pass filter to remove DC offset and rumble
   
   // Recorder Nodes
   private mediaDest: MediaStreamAudioDestinationNode | null = null;
@@ -22,6 +23,12 @@ class FMAudioCore {
   // Recording constants
   private static readonly RECORDING_DATA_INTERVAL = 100; // ms between data collection
   private static readonly RECORDING_STOP_DELAY = 100; // ms to wait after stopping previous recording
+
+  // Audio quality constants
+  private static readonly MIN_RELEASE_TIME = 0.02; // Minimum 20ms release to prevent clicks
+  private static readonly REVERB_DECAY_EXPONENT = 2.5; // Controls reverb decay curve shape
+  private static readonly REVERB_NOISE_GATE = 0.02; // Below this level, set reverb tail to 0
+  private static readonly REVERB_OUTPUT_LEVEL = 0.7; // Reduce reverb level to prevent noise buildup
 
   // Reverb (Algorithmic)
   private convolver: ConvolverNode | null = null;
@@ -36,7 +43,7 @@ class FMAudioCore {
 
   // Polyphony management - prevent clipping when many notes play
   private maxPolyphony: number = 32;
-  private baseGain: number = 0.25; // Per-voice base gain
+  private baseGain: number = 0.22; // Slightly reduced per-voice base gain for cleaner sound
 
   constructor() {
     Logger.log('info', 'FMAudioCore: Engine v5 Initialized');
@@ -51,37 +58,44 @@ class FMAudioCore {
 
         // 1. Master Bus
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.30; // Lower to prevent clipping with polyphony
+        this.masterGain.gain.value = 0.28; // Slightly lower to prevent clipping with polyphony
 
-        // 2. Soft Mode Filter (Low-pass for smoother sound)
+        // 2. DC Blocker / High-pass filter (removes DC offset and sub-bass rumble that causes crackling)
+        this.dcBlocker = this.ctx.createBiquadFilter();
+        this.dcBlocker.type = 'highpass';
+        this.dcBlocker.frequency.value = 20; // Cut below 20Hz (inaudible, prevents rumble/DC offset)
+        this.dcBlocker.Q.value = 0.7; // Gentle slope
+
+        // 3. Soft Mode Filter (Low-pass for smoother sound)
         this.softModeFilter = this.ctx.createBiquadFilter();
         this.softModeFilter.type = 'lowpass';
         this.softModeFilter.frequency.value = 20000; // Full range when disabled
         this.softModeFilter.Q.value = 0.5;
 
-        // 3. Brickwall Limiter (Very aggressive to prevent crackling)
+        // 4. Brickwall Limiter (Tuned for clean limiting without artifacts)
         this.limiter = this.ctx.createDynamicsCompressor();
-        this.limiter.threshold.value = -6.0; // Lower threshold catches more peaks
-        this.limiter.knee.value = 6; // Softer knee for smoother limiting
-        this.limiter.ratio.value = 20; 
-        this.limiter.attack.value = 0.0005; // Very fast attack to catch transients
-        this.limiter.release.value = 0.025; // Faster release to avoid pumping
+        this.limiter.threshold.value = -3.0; // Higher threshold for less aggressive limiting
+        this.limiter.knee.value = 10; // Softer knee for smoother, more transparent limiting
+        this.limiter.ratio.value = 12; // Lower ratio to avoid pumping
+        this.limiter.attack.value = 0.003; // Slightly slower attack to preserve transients
+        this.limiter.release.value = 0.1; // Slower release to avoid crackling/pumping
 
-        // 4. Reverb Unit
+        // 5. Reverb Unit
         this.convolver = this.ctx.createConvolver();
-        this.convolver.buffer = this.generateReverbImpulse(3.0);
+        this.convolver.buffer = this.generateReverbImpulse(2.5); // Slightly shorter for less noise
         
         const reverbReturn = this.ctx.createGain();
-        reverbReturn.gain.value = 1.0; 
+        reverbReturn.gain.value = 0.8; // Slightly reduce reverb level
 
-        // Graph: masterGain -> softModeFilter -> limiter -> destination
+        // Signal Chain: masterGain -> dcBlocker -> softModeFilter -> limiter -> destination
         this.convolver.connect(reverbReturn);
         reverbReturn.connect(this.masterGain);
-        this.masterGain.connect(this.softModeFilter);
+        this.masterGain.connect(this.dcBlocker);
+        this.dcBlocker.connect(this.softModeFilter);
         this.softModeFilter.connect(this.limiter);
         this.limiter.connect(this.ctx.destination);
 
-        // 5. Recording Tap
+        // 6. Recording Tap
         this.mediaDest = this.ctx.createMediaStreamDestination();
         this.limiter.connect(this.mediaDest);
 
@@ -175,10 +189,29 @@ class FMAudioCore {
     if (!this.ctx) throw new Error("No Context");
     const len = this.ctx.sampleRate * duration;
     const buffer = this.ctx.createBuffer(2, len, this.ctx.sampleRate);
+    
+    // Use a more sophisticated reverb impulse with less noise
+    // Apply a noise gate to eliminate low-level hiss
+    
     for (let c = 0; c < 2; c++) {
       const data = buffer.getChannelData(c);
       for (let i = 0; i < len; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+        // Calculate decay envelope - smoother exponential decay
+        const decay = Math.pow(1 - i / len, FMAudioCore.REVERB_DECAY_EXPONENT);
+        
+        // Generate noise with shaped spectrum (less harsh highs)
+        let noise = (Math.random() * 2 - 1);
+        
+        // Apply decay
+        let sample = noise * decay;
+        
+        // Apply noise gate to eliminate low-level hiss at tail
+        if (Math.abs(sample) < FMAudioCore.REVERB_NOISE_GATE) {
+          sample = 0;
+        }
+        
+        // Reduce overall level to prevent noise buildup
+        data[i] = sample * FMAudioCore.REVERB_OUTPUT_LEVEL;
       }
     }
     return buffer;
@@ -307,17 +340,31 @@ class FMAudioCore {
 
     voices.forEach(voice => {
       const { releaseTime } = voice.preset.physics;
-      const actualRelease = immediate ? 0.05 : releaseTime;
+      // Minimum release time to prevent clicks, even for immediate stops
+      const actualRelease = immediate ? FMAudioCore.MIN_RELEASE_TIME : Math.max(FMAudioCore.MIN_RELEASE_TIME, releaseTime);
 
       // Cancel future scheduled events
       voice.outputNode.gain.cancelScheduledValues(t);
       
       // Grab current value to prevent popping
       const currentGain = voice.outputNode.gain.value;
-      voice.outputNode.gain.setValueAtTime(currentGain, t);
       
-      // Release Fade
-      voice.outputNode.gain.linearRampToValueAtTime(0, t + actualRelease);
+      // If gain is already very low, just cut it
+      if (currentGain < 0.001) {
+        voice.outputNode.gain.setValueAtTime(0, t);
+      } else {
+        voice.outputNode.gain.setValueAtTime(currentGain, t);
+        
+        // Use exponential ramp to a very small value, then linear to 0
+        // This creates a smoother, more natural fade that prevents clicks
+        const halfRelease = actualRelease * 0.7;
+        const targetMid = Math.max(0.0001, currentGain * 0.01);
+        
+        // Exponential decay to near-zero (natural sounding)
+        voice.outputNode.gain.exponentialRampToValueAtTime(targetMid, t + halfRelease);
+        // Final linear ramp to exactly zero (avoids exponential asymptote)
+        voice.outputNode.gain.linearRampToValueAtTime(0, t + actualRelease);
+      }
 
       // Stop Oscillators
       voice.nodes.forEach(node => {
@@ -387,17 +434,29 @@ class FMAudioCore {
     // Iterate through all active voices and stop them
     for (const [freq, voices] of this.activeVoices.entries()) {
       voices.forEach(voice => {
-        const releaseTime = 0.05; // Quick fade out to avoid pops
+        // Use minimum release time with small buffer for quick but smooth stop
+        const releaseTime = FMAudioCore.MIN_RELEASE_TIME * 1.5;
         
-        // Fade out the voice quickly
-        voice.outputNode.gain.setValueAtTime(voice.outputNode.gain.value, t);
-        voice.outputNode.gain.linearRampToValueAtTime(0, t + releaseTime);
+        // Cancel any scheduled changes
+        voice.outputNode.gain.cancelScheduledValues(t);
+        
+        // Get current gain value
+        const currentGain = voice.outputNode.gain.value;
+        
+        if (currentGain < 0.001) {
+          voice.outputNode.gain.setValueAtTime(0, t);
+        } else {
+          // Smooth exponential then linear fade to prevent clicks
+          voice.outputNode.gain.setValueAtTime(currentGain, t);
+          voice.outputNode.gain.exponentialRampToValueAtTime(0.001, t + releaseTime * 0.7);
+          voice.outputNode.gain.linearRampToValueAtTime(0, t + releaseTime);
+        }
         
         // Stop oscillators
         voice.nodes.forEach(node => {
           if (node instanceof OscillatorNode) {
             try {
-              node.stop(t + releaseTime + 0.01);
+              node.stop(t + releaseTime + 0.02);
             } catch (e) {
               // Already stopped
             }
