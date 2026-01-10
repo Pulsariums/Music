@@ -3,7 +3,7 @@ import { Logger } from "../../lib/logger";
 
 const DB_NAME = "SoundSphereDB";
 const STORE_NAME = "recordings";
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Must match SessionRepository version
 
 /**
  * Handles persistent storage of large audio blobs using IndexedDB.
@@ -24,8 +24,17 @@ class RecordingService {
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
+        // Create all stores to be consistent with SessionRepository
+        // Store names must match those in SessionRepository.ts
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: "id" });
+        }
+        // SessionRepository stores - must be created here too for DB upgrade consistency
+        if (!db.objectStoreNames.contains("sessions")) {
+          db.createObjectStore("sessions", { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains("midiFiles")) {
+          db.createObjectStore("midiFiles", { keyPath: "id" });
         }
       };
 

@@ -141,4 +141,5 @@ export interface SavedMidiFile {
   id: string;
   name: string;
   sequence: SongSequence;
+  createdAt?: number;
 }

@@ -58,18 +58,47 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   
   // MIDI Playback State
   const [isPlayingMidi, setIsPlayingMidi] = useState(false);
+  const [isPausedMidi, setIsPausedMidi] = useState(false); // Paused for training mode
   const [currentMidi, setCurrentMidi] = useState<SongSequence | null>(null);
   const [midiTempo, setMidiTempo] = useState(100); // Playback speed percentage (100% = normal)
   const [midiPlaybackTime, setMidiPlaybackTime] = useState(0); // Current playback time in seconds
+  const [midiStartPosition, setMidiStartPosition] = useState(0); // Position in seconds where we started playback from
   const midiTimeoutRefs = useRef<number[]>([]);
   const midiStartTimeRef = useRef<number>(0);
   const midiAnimationRef = useRef<number>(0);
+  const midiTempoRef = useRef(midiTempo); // Ref for tempo to use in animation
+  
+  // Refs to avoid stale closure in animation loop
+  const isPlayingMidiRef = useRef(false);
+  const isPausedMidiRef = useRef(false);
+  const currentMidiRef = useRef<SongSequence | null>(null);
+  const showFallingNotesRef = useRef(true);
+  const trainingModeEnabledRef = useRef(false);
+  const keyWidthRef = useRef(keyWidth);
+  const sizeRef = useRef(size);
+  const pendingNotesRef = useRef<Set<string>>(new Set()); // Notes waiting to be played in training mode
+  const nextEventIndexRef = useRef(0); // Track which event is next in training mode
+
+  // Training Mode State
+  const [showFallingNotes, setShowFallingNotes] = useState(true); // Visibility toggle for falling notes overlay
+  // TODO: trainingModeEnabled will pause MIDI playback until user presses the correct key
+  const [trainingModeEnabled, setTrainingModeEnabled] = useState(false); // Wait for user input mode (not yet implemented)
 
   // Refs for interactions
   const dragRef = useRef<{ startX: number, startY: number, initX: number, initY: number } | null>(null);
   const resizeRef = useRef<{ startX: number, startY: number, initW: number, initH: number } | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const fallingNotesCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Sync refs with state to avoid stale closures in animation loop
+  useEffect(() => { isPlayingMidiRef.current = isPlayingMidi; }, [isPlayingMidi]);
+  useEffect(() => { isPausedMidiRef.current = isPausedMidi; }, [isPausedMidi]);
+  useEffect(() => { currentMidiRef.current = currentMidi; }, [currentMidi]);
+  useEffect(() => { showFallingNotesRef.current = showFallingNotes; }, [showFallingNotes]);
+  useEffect(() => { trainingModeEnabledRef.current = trainingModeEnabled; }, [trainingModeEnabled]);
+  useEffect(() => { keyWidthRef.current = keyWidth; }, [keyWidth]);
+  useEffect(() => { sizeRef.current = size; }, [size]);
+  useEffect(() => { midiTempoRef.current = midiTempo; }, [midiTempo]);
 
   // Generate Local Keyboard (Standard 88 keys range effectively)
   const notes = useMemo(() => generateKeyboard(1, 7), []);
@@ -178,61 +207,250 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     return Math.max(0, Math.min(1, pianoCenterX / screenWidth));
   };
   
-  const playLocal = (note: string, freq: number) => onPlayNote(note, freq, activePreset, transpose, getPanPosition());
+  const playLocal = (note: string, freq: number) => {
+    // Check training mode - if we're waiting for this note, handle it
+    if (trainingModeEnabledRef.current && isPausedMidiRef.current) {
+      checkTrainingNote(note);
+    }
+    onPlayNote(note, freq, activePreset, transpose, getPanPosition());
+  };
   const stopLocal = (note: string, freq: number) => onStopNote(note, freq, transpose);
 
   // --- MIDI PLAYBACK WITH FALLING NOTES ---
-  const playMidi = (sequence: SongSequence) => {
+  // Training mode: store sorted events for waiting on user input
+  const sortedEventsRef = useRef<typeof currentMidi extends { events: infer E } ? E : never[]>([]);
+  const trainingPauseTimeRef = useRef<number>(0); // When we paused for training
+  const trainingAccumulatedPauseRef = useRef<number>(0); // Total time spent paused
+  
+  const playMidi = (sequence: SongSequence, fromPosition: number = 0) => {
     stopMidi(); // Stop any current playback
+    
+    // Enable MIDI playback mode in audio engine to prevent pop/click between notes
+    AudioEngine.setMidiPlaybackMode(true);
+    
+    // Update refs IMMEDIATELY (before state updates) to avoid stale closure issues
+    currentMidiRef.current = sequence;
+    isPlayingMidiRef.current = true;
+    isPausedMidiRef.current = false;
+    pendingNotesRef.current = new Set();
+    nextEventIndexRef.current = 0;
+    trainingAccumulatedPauseRef.current = 0;
+    
     setCurrentMidi(sequence);
     setIsPlayingMidi(true);
-    setMidiPlaybackTime(0);
+    setIsPausedMidi(false);
+    setMidiPlaybackTime(fromPosition);
+    setMidiStartPosition(fromPosition);
     
-    midiStartTimeRef.current = Date.now();
+    midiStartTimeRef.current = Date.now() - (fromPosition * 1000 * (100 / midiTempo));
     const pan = getPanPosition();
     const tempoMultiplier = 100 / midiTempo; // 100% = 1x, 50% = 2x slower, 200% = 0.5x faster
     
-    sequence.events.forEach(event => {
-      // Schedule note on (adjusted by tempo)
-      const noteOnTimeout = window.setTimeout(() => {
-        const freq = noteToFreq(event.noteName);
-        if (freq) {
-          onPlayNote(event.noteName, freq, activePreset, transpose, pan);
-        }
-      }, event.startTime * 1000 * tempoMultiplier);
-      
-      // Schedule note off (adjusted by tempo)
-      const noteOffTimeout = window.setTimeout(() => {
-        const freq = noteToFreq(event.noteName);
-        if (freq) {
-          onStopNote(event.noteName, freq, transpose);
-        }
-      }, (event.startTime + event.duration) * 1000 * tempoMultiplier);
-      
-      midiTimeoutRefs.current.push(noteOnTimeout, noteOffTimeout);
-    });
+    // Sort events by start time for training mode
+    const sortedEvents = [...sequence.events].sort((a, b) => a.startTime - b.startTime);
+    sortedEventsRef.current = sortedEvents;
     
-    // Schedule playback end
-    const maxTime = Math.max(...sequence.events.map(e => e.startTime + e.duration));
-    const endTimeout = window.setTimeout(() => {
-      setIsPlayingMidi(false);
-      setCurrentMidi(null);
-      setMidiPlaybackTime(0);
-      cancelAnimationFrame(midiAnimationRef.current);
-    }, maxTime * 1000 * tempoMultiplier + 100);
-    midiTimeoutRefs.current.push(endTimeout);
+    // Filter events that haven't happened yet
+    const futureEvents = sortedEvents.filter(event => event.startTime >= fromPosition);
     
-    // Start falling notes animation
-    startFallingNotesAnimation(tempoMultiplier);
+    // In training mode, don't schedule notes - wait for user input
+    if (!trainingModeEnabledRef.current) {
+      futureEvents.forEach((event, index) => {
+        // Calculate adjusted time based on position offset
+        const adjustedStartTime = event.startTime - fromPosition;
+        const adjustedEndTime = adjustedStartTime + event.duration;
+        
+        // Schedule note on (adjusted by tempo)
+        const noteOnTimeout = window.setTimeout(() => {
+          const freq = noteToFreq(event.noteName);
+          if (freq) {
+            onPlayNote(event.noteName, freq, activePreset, transpose, pan);
+          }
+        }, adjustedStartTime * 1000 * tempoMultiplier);
+        
+        // Schedule note off (adjusted by tempo)
+        const noteOffTimeout = window.setTimeout(() => {
+          const freq = noteToFreq(event.noteName);
+          if (freq) {
+            onStopNote(event.noteName, freq, transpose);
+          }
+        }, adjustedEndTime * 1000 * tempoMultiplier);
+        
+        midiTimeoutRefs.current.push(noteOnTimeout, noteOffTimeout);
+      });
+      
+      // Schedule playback end
+      const maxTime = Math.max(...sequence.events.map(e => e.startTime + e.duration));
+      const remainingTime = maxTime - fromPosition;
+      const endTimeout = window.setTimeout(() => {
+        isPlayingMidiRef.current = false;
+        isPausedMidiRef.current = false;
+        currentMidiRef.current = null;
+        // Disable MIDI playback mode when playback ends naturally
+        AudioEngine.setMidiPlaybackMode(false);
+        setIsPlayingMidi(false);
+        setIsPausedMidi(false);
+        setCurrentMidi(null);
+        setMidiPlaybackTime(0);
+        setMidiStartPosition(0);
+        cancelAnimationFrame(midiAnimationRef.current);
+      }, remainingTime * 1000 * tempoMultiplier + 100);
+      midiTimeoutRefs.current.push(endTimeout);
+    } else {
+      // Training mode - find the first event after fromPosition
+      const firstFutureIndex = sortedEvents.findIndex(e => e.startTime >= fromPosition);
+      nextEventIndexRef.current = firstFutureIndex >= 0 ? firstFutureIndex : sortedEvents.length;
+      
+      // Build pending notes for the current time point
+      updatePendingNotes();
+    }
+    
+    // Start falling notes animation after a short delay to allow canvas to mount
+    setTimeout(() => {
+      startFallingNotesAnimation(tempoMultiplier);
+    }, 50);
+  };
+  
+  // Update pending notes based on current playback time (for training mode)
+  const updatePendingNotes = () => {
+    if (!trainingModeEnabledRef.current || !currentMidiRef.current) return;
+    
+    const currentTime = midiPlaybackTime;
+    const events = sortedEventsRef.current;
+    
+    // Find all notes that should be played at the current time (within a small tolerance)
+    pendingNotesRef.current = new Set();
+    
+    for (let i = nextEventIndexRef.current; i < events.length; i++) {
+      const event = events[i];
+      // Include notes that are about to be played (within 0.1 seconds)
+      if (event.startTime <= currentTime + 0.1) {
+        pendingNotesRef.current.add(normalizeNoteName(event.noteName));
+      } else {
+        break; // Events are sorted, so we can stop here
+      }
+    }
+    
+    // If there are pending notes, pause until user presses them
+    if (pendingNotesRef.current.size > 0 && !isPausedMidiRef.current) {
+      trainingPauseTimeRef.current = Date.now();
+      isPausedMidiRef.current = true;
+      setIsPausedMidi(true);
+    }
+  };
+  
+  // Normalize note name (e.g., "Db4" -> "C#4")
+  const normalizeNoteName = (noteName: string): string => {
+    const flatToSharp: Record<string, string> = {
+      'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#'
+    };
+    
+    const match = noteName.match(/^([A-G])([#b]?)(\d+)$/);
+    if (!match) return noteName;
+    
+    const [, letter, accidental, octave] = match;
+    if (accidental === 'b') {
+      const sharpEquiv = flatToSharp[letter + 'b'];
+      if (sharpEquiv) {
+        return sharpEquiv + octave;
+      }
+    }
+    return noteName;
+  };
+  
+  // Check if a user-pressed note matches pending notes (called from PianoKey press)
+  const checkTrainingNote = (noteName: string) => {
+    if (!trainingModeEnabledRef.current || !isPausedMidiRef.current) return;
+    
+    const normalizedNote = normalizeNoteName(noteName);
+    
+    if (pendingNotesRef.current.has(normalizedNote)) {
+      pendingNotesRef.current.delete(normalizedNote);
+      
+      // If all pending notes have been pressed, resume playback
+      if (pendingNotesRef.current.size === 0) {
+        // Calculate how long we were paused
+        const pauseDuration = Date.now() - trainingPauseTimeRef.current;
+        trainingAccumulatedPauseRef.current += pauseDuration;
+        
+        // Adjust start time to account for pause
+        midiStartTimeRef.current += pauseDuration;
+        
+        // Move to next event(s)
+        const events = sortedEventsRef.current;
+        const currentEventTime = events[nextEventIndexRef.current]?.startTime;
+        
+        // Skip all events at the same time point
+        while (nextEventIndexRef.current < events.length && 
+               events[nextEventIndexRef.current].startTime === currentEventTime) {
+          nextEventIndexRef.current++;
+        }
+        
+        // Resume playback
+        isPausedMidiRef.current = false;
+        setIsPausedMidi(false);
+        
+        // Check if we've reached the end
+        if (nextEventIndexRef.current >= events.length) {
+          // End playback after a short delay
+          setTimeout(() => {
+            stopMidi();
+          }, 500);
+        }
+      }
+    }
+  };
+  
+  // Seek functions for MIDI transport controls
+  const seekMidi = (offsetSeconds: number) => {
+    if (!currentMidi) return;
+    
+    const maxTime = Math.max(...currentMidi.events.map(e => e.startTime + e.duration));
+    const newPosition = Math.max(0, Math.min(maxTime - 0.1, midiPlaybackTime + offsetSeconds));
+    
+    playMidi(currentMidi, newPosition);
+  };
+  
+  const restartMidi = () => {
+    if (!currentMidi) return;
+    playMidi(currentMidi, 0);
+  };
+  
+  // Restart playback with new tempo when tempo changes during playback
+  const handleTempoChange = (newTempo: number) => {
+    setMidiTempo(newTempo);
+    
+    // If currently playing, restart from current position with new tempo
+    if (isPlayingMidi && currentMidi) {
+      // Save current position before tempo change
+      const currentPos = midiPlaybackTime;
+      
+      // Use setTimeout to ensure state update completes
+      setTimeout(() => {
+        playMidi(currentMidi, currentPos);
+      }, 10);
+    }
   };
   
   const stopMidi = () => {
     midiTimeoutRefs.current.forEach(t => clearTimeout(t));
     midiTimeoutRefs.current = [];
     cancelAnimationFrame(midiAnimationRef.current);
+    
+    // Disable MIDI playback mode in audio engine
+    AudioEngine.setMidiPlaybackMode(false);
+    
+    // Update refs immediately
+    isPlayingMidiRef.current = false;
+    isPausedMidiRef.current = false;
+    currentMidiRef.current = null;
+    pendingNotesRef.current = new Set();
+    
     setIsPlayingMidi(false);
+    setIsPausedMidi(false);
     setCurrentMidi(null);
     setMidiPlaybackTime(0);
+    setMidiStartPosition(0);
     
     // Stop all currently playing notes from this MIDI
     AudioEngine.stopAllNotes();
@@ -247,15 +465,56 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     }
   };
   
-  // Falling notes animation
+  // Falling notes animation - uses refs to avoid stale closure
   const startFallingNotesAnimation = (tempoMultiplier: number) => {
     const animate = () => {
-      if (!isPlayingMidi && !currentMidi) return;
+      // Use refs instead of state to avoid stale closure
+      if (!isPlayingMidiRef.current && !currentMidiRef.current) return;
       
-      const elapsed = (Date.now() - midiStartTimeRef.current) / 1000 / tempoMultiplier;
-      setMidiPlaybackTime(elapsed);
+      // Don't update time if paused in training mode
+      let elapsed: number;
+      if (isPausedMidiRef.current && trainingModeEnabledRef.current) {
+        // Keep showing the same time while paused
+        elapsed = (trainingPauseTimeRef.current - midiStartTimeRef.current) / 1000 / tempoMultiplier;
+      } else {
+        elapsed = (Date.now() - midiStartTimeRef.current) / 1000 / tempoMultiplier;
+        setMidiPlaybackTime(elapsed);
+        
+        // In training mode, check if we need to pause for pending notes
+        if (trainingModeEnabledRef.current && !isPausedMidiRef.current) {
+          const events = sortedEventsRef.current;
+          const nextIdx = nextEventIndexRef.current;
+          
+          if (nextIdx < events.length) {
+            const nextEvent = events[nextIdx];
+            // If we've reached or passed the next note's time, pause and wait for input
+            if (elapsed >= nextEvent.startTime - 0.05) {
+              // Collect all notes that should be played at this time point
+              pendingNotesRef.current = new Set();
+              const targetTime = nextEvent.startTime;
+              
+              for (let i = nextIdx; i < events.length; i++) {
+                if (Math.abs(events[i].startTime - targetTime) < 0.05) {
+                  pendingNotesRef.current.add(normalizeNoteName(events[i].noteName));
+                } else {
+                  break;
+                }
+              }
+              
+              if (pendingNotesRef.current.size > 0) {
+                trainingPauseTimeRef.current = Date.now();
+                isPausedMidiRef.current = true;
+                setIsPausedMidi(true);
+              }
+            }
+          }
+        }
+      }
       
-      renderFallingNotes(elapsed, tempoMultiplier);
+      // Only render if falling notes are visible (use ref)
+      if (showFallingNotesRef.current) {
+        renderFallingNotes(elapsed, tempoMultiplier);
+      }
       
       midiAnimationRef.current = requestAnimationFrame(animate);
     };
@@ -263,42 +522,78 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     midiAnimationRef.current = requestAnimationFrame(animate);
   };
   
-  // Render falling notes on canvas
+  // Render falling notes on canvas - notes fall from above the piano and land on the keys
+  // OPTIMIZED v2: Frame skipping, cached positions, batch rendering
+  const lastCanvasSizeRef = useRef({ width: 0, height: 0 });
+  const lastScrollOffsetRef = useRef(0);
+  const frameSkipCounterRef = useRef(0);
+  
+  // OPTIMIZATION: Cache note positions to avoid recalculating every frame
+  const notePositionCacheRef = useRef<Map<string, { x: number; width: number; isBlack: boolean } | null>>(new Map());
+  
   const renderFallingNotes = (currentTime: number, tempoMultiplier: number) => {
     const canvas = fallingNotesCanvasRef.current;
     const scrollContainer = scrollContainerRef.current;
-    if (!canvas || !scrollContainer || !currentMidi) return;
+    const midi = currentMidiRef.current; // Use ref instead of state
+    if (!canvas || !scrollContainer || !midi) return;
     
-    const ctx = canvas.getContext('2d');
+    // OPTIMIZATION: Skip frames on mobile for better performance (render at 30fps instead of 60fps)
+    frameSkipCounterRef.current++;
+    const isMobile = window.innerWidth < 768;
+    if (isMobile && frameSkipCounterRef.current % 2 !== 0) {
+      return; // Skip every other frame on mobile
+    }
+    
+    const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
     
+    // Use refs for current values (avoid stale closures)
+    const currentKeyWidth = keyWidthRef.current;
+    const currentSize = sizeRef.current;
+    
     // Get visible width and actual scroll position
-    const visibleWidth = size.width;
-    const canvasHeight = size.height - 50; // Leave space for header
+    const visibleWidth = currentSize.width;
+    const pianoKeyboardHeight = currentSize.height - 50; // Height of the keyboard area (below header)
     const scrollOffset = scrollContainer.scrollLeft;
     
-    // Set canvas size to match VISIBLE area (not scroll area)
-    canvas.width = visibleWidth;
-    canvas.height = canvasHeight;
+    // OPTIMIZATION: Only resize canvas when dimensions actually change
+    // Resizing is very expensive and causes jank
+    if (canvas.width !== visibleWidth || canvas.height !== pianoKeyboardHeight) {
+      canvas.width = visibleWidth;
+      canvas.height = pianoKeyboardHeight;
+      lastCanvasSizeRef.current = { width: visibleWidth, height: pianoKeyboardHeight };
+      // Clear position cache when size changes (keyWidth might have changed)
+      notePositionCacheRef.current.clear();
+    }
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Calculate visible time window (notes fall from top)
-    const lookAheadTime = 3; // Show notes 3 seconds ahead
-    const pixelsPerSecond = (canvasHeight) / lookAheadTime;
+    // Falling notes configuration
+    const whiteKeyHitLineY = pianoKeyboardHeight;
+    const blackKeyHitLineY = pianoKeyboardHeight * 0.65;
+    const lookAheadTime = 3.0;
+    const pixelsPerSecond = pianoKeyboardHeight / lookAheadTime;
     
-    // Map MIDI notes to keyboard positions - calculate based on note names
-    // C1 starts at position 0, each white key adds keyWidth
+    // Note height scale factor - reduce heights to show more notes at once
+    const noteHeightScale = 0.5; // 50% of original height for even more visibility
+    
+    // OPTIMIZATION: Cached note position lookup with memoization
     const getNotePosition = (noteName: string): { x: number; width: number; isBlack: boolean } | null => {
+      // Check cache first
+      const cached = notePositionCacheRef.current.get(noteName);
+      if (cached !== undefined) return cached;
+      
       // Parse note name (e.g., "C4", "C#4", "Db4")
       const match = noteName.match(/^([A-G])([#b]?)(\d+)$/);
-      if (!match) return null;
+      if (!match) {
+        notePositionCacheRef.current.set(noteName, null);
+        return null;
+      }
       
       const [, letter, accidental, octaveStr] = match;
       const octave = parseInt(octaveStr, 10);
       
       // White key notes: C, D, E, F, G, A, B
-      // Black key notes: C#/Db, D#/Eb, F#/Gb, G#/Ab, A#/Bb
       const whiteKeyOrder = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
       const isBlack = accidental === '#' || accidental === 'b';
       
@@ -308,94 +603,128 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         if (accidental === '#') {
           baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
         } else {
-          // Flat - it's the note before
-          const flatIndex = whiteKeyOrder.indexOf(letter);
-          baseWhiteKeyIndex = flatIndex - 1;
-          if (baseWhiteKeyIndex < 0) baseWhiteKeyIndex = 6; // Bb is before B
+          // Flat - use the equivalent sharp
+          const flatToSharp: Record<string, string> = { 'Db': 'C#', 'Eb': 'D#', 'Gb': 'F#', 'Ab': 'G#', 'Bb': 'A#' };
+          const sharpEquiv = flatToSharp[letter + 'b'];
+          if (sharpEquiv) {
+            baseWhiteKeyIndex = whiteKeyOrder.indexOf(sharpEquiv[0]);
+          } else {
+            baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter) - 1;
+            if (baseWhiteKeyIndex < 0) baseWhiteKeyIndex = 6;
+          }
         }
       } else {
         baseWhiteKeyIndex = whiteKeyOrder.indexOf(letter);
       }
       
       // Calculate absolute white key position from C1
-      const octaveOffset = (octave - 1) * 7; // 7 white keys per octave
+      const octaveOffset = (octave - 1) * 7;
       const whiteKeyPosition = octaveOffset + baseWhiteKeyIndex;
       
-      // Calculate X position
-      const startPadding = 16; // Same as keyboard padding
-      const whiteKeyWidth = keyWidth;
-      const blackKeyWidth = keyWidth * 0.65;
+      // Calculate X position matching the keyboard layout exactly
+      const startPadding = 16;
+      const whiteKeyWidth = currentKeyWidth;
+      const blackKeyWidth = currentKeyWidth * 0.65;
       
+      let result: { x: number; width: number; isBlack: boolean };
       if (isBlack) {
-        // Black key overlaps between two white keys
         const x = startPadding + (whiteKeyPosition * whiteKeyWidth) + (whiteKeyWidth * 0.675);
-        return { x, width: blackKeyWidth, isBlack: true };
+        result = { x, width: blackKeyWidth, isBlack: true };
       } else {
         const x = startPadding + (whiteKeyPosition * whiteKeyWidth);
-        return { x, width: whiteKeyWidth, isBlack: false };
+        result = { x, width: whiteKeyWidth, isBlack: false };
       }
+      
+      // OPTIMIZATION: Cache the result
+      notePositionCacheRef.current.set(noteName, result);
+      return result;
     };
     
-    // Render each note
-    currentMidi.events.forEach(event => {
+    // Render each note - notes fall from top (off-screen) toward the bottom (hit line)
+    // OPTIMIZATION: Filter events to only visible time window first
+    const visibleEvents = midi.events.filter(event => {
       const noteEnd = event.startTime + event.duration;
+      return noteEnd >= currentTime - 0.2 && event.startTime <= currentTime + lookAheadTime;
+    });
+    
+    // OPTIMIZATION: Stricter limit on mobile
+    const maxNotesToRender = isMobile ? 60 : 100;
+    const eventsToRender = visibleEvents.slice(0, maxNotesToRender);
+    
+    // OPTIMIZATION: Batch similar colors together to reduce state changes
+    const whiteNotes: typeof eventsToRender = [];
+    const blackNotes: typeof eventsToRender = [];
+    const pendingNotes: typeof eventsToRender = [];
+    
+    eventsToRender.forEach(event => {
+      const notePos = getNotePosition(event.noteName);
+      if (!notePos) return;
       
-      // Only render notes that are visible in the time window
-      if (noteEnd >= currentTime - 0.5 && event.startTime <= currentTime + lookAheadTime) {
+      const normalizedEventNote = normalizeNoteName(event.noteName);
+      const isPending = trainingModeEnabledRef.current && 
+                       isPausedMidiRef.current && 
+                       pendingNotesRef.current.has(normalizedEventNote);
+      
+      if (isPending) {
+        pendingNotes.push(event);
+      } else if (notePos.isBlack) {
+        blackNotes.push(event);
+      } else {
+        whiteNotes.push(event);
+      }
+    });
+    
+    // OPTIMIZATION: Helper function to render a batch of notes
+    const renderNoteBatch = (events: typeof eventsToRender, color: string, useShadow: boolean) => {
+      if (events.length === 0) return;
+      
+      ctx.fillStyle = color;
+      if (useShadow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+      } else {
+        ctx.shadowBlur = 0;
+      }
+      
+      events.forEach(event => {
         const notePos = getNotePosition(event.noteName);
         if (!notePos) return;
         
-        // Calculate Y position (notes fall down toward bottom)
+        const hitLineY = notePos.isBlack ? blackKeyHitLineY : whiteKeyHitLineY;
         const timeUntilNote = event.startTime - currentTime;
-        const noteHeight = Math.max(4, event.duration * pixelsPerSecond);
-        
-        // Y position: 0 = top of canvas, notes at currentTime should be at bottom
-        // Notes coming up should be at top and fall down
-        const yBottom = canvasHeight - (timeUntilNote * pixelsPerSecond);
-        const yTop = yBottom - noteHeight;
-        
-        // Adjust X position for scroll offset
+        const noteEnd = event.startTime + event.duration;
+        const noteHeight = Math.max(5, event.duration * pixelsPerSecond * noteHeightScale);
+        const noteBottomY = hitLineY - (timeUntilNote * pixelsPerSecond);
+        const noteTopY = noteBottomY - noteHeight;
         const x = notePos.x - scrollOffset;
         
         // Only draw if visible in viewport
         if (x + notePos.width > 0 && x < visibleWidth) {
-          // Determine color based on note type and state
-          const isPlaying = currentTime >= event.startTime && currentTime <= noteEnd;
+          const drawHeight = Math.min(noteBottomY, pianoKeyboardHeight) - Math.max(0, noteTopY);
+          if (drawHeight <= 0 || noteBottomY < 0) return;
           
-          // Reset shadow for clean drawing
-          ctx.shadowBlur = 0;
-          ctx.shadowColor = 'transparent';
+          const padding = 2;
+          const radius = Math.min(3, notePos.width / 4);
+          const drawX = x + padding;
+          const drawWidth = notePos.width - padding * 2;
+          const finalY = Math.max(0, noteTopY);
           
-          if (notePos.isBlack) {
-            ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Indigo for black keys
-          } else {
-            ctx.fillStyle = isPlaying ? '#a78bfa' : '#7c3aed'; // Purple for white keys
-          }
-          
-          // Draw rounded rectangle
-          const radius = 4;
-          const y = Math.max(0, yTop);
-          const height = Math.min(noteHeight, canvasHeight - y);
-          
-          if (height > 0 && y < canvasHeight) {
-            ctx.beginPath();
-            ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
-            ctx.fill();
-            
-            // Add glow effect for playing notes
-            if (isPlaying) {
-              ctx.shadowColor = '#a78bfa';
-              ctx.shadowBlur = 15;
-              ctx.fillStyle = 'rgba(167, 139, 250, 0.6)';
-              ctx.beginPath();
-              ctx.roundRect(x + 2, y, notePos.width - 4, height, radius);
-              ctx.fill();
-              ctx.shadowBlur = 0;
-            }
-          }
+          ctx.beginPath();
+          ctx.roundRect(drawX, finalY, drawWidth, drawHeight, radius);
+          ctx.fill();
         }
+      });
+      
+      // Reset shadow after batch
+      if (useShadow) {
+        ctx.shadowBlur = 0;
       }
-    });
+    };
+    
+    // Render in order: white notes, black notes, pending notes (on top)
+    renderNoteBatch(whiteNotes, '#7c3aed', false);
+    renderNoteBatch(blackNotes, '#4f46e5', false);
+    renderNoteBatch(pendingNotes, '#22c55e', true); // Only pending notes get glow
   };
   
   // Cleanup on unmount
@@ -470,15 +799,17 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         {/* CONTENT: KEYBOARD */}
         <div className="flex-1 relative bg-black/40 group/keyboard overflow-hidden rounded-b-2xl">
             
-            {/* FALLING NOTES CANVAS - Overlays the keyboard */}
-            {isPlayingMidi && currentMidi && (
+            {/* FALLING NOTES CANVAS - Overlays the keyboard (above black keys z-50) */}
+            {showFallingNotes && (
               <canvas
                 ref={fallingNotesCanvasRef}
-                className="absolute inset-0 z-40 pointer-events-none"
+                className="absolute inset-0 pointer-events-none"
                 style={{ 
                   width: '100%', 
                   height: '100%',
-                  opacity: 0.9
+                  opacity: 0.9,
+                  zIndex: 55, // Above black keys (z-50)
+                  display: isPlayingMidi && currentMidi ? 'block' : 'none'
                 }}
               />
             )}
@@ -487,9 +818,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <button 
                 onMouseDown={(e) => { e.stopPropagation(); handleScroll('left'); }}
                 onTouchStart={(e) => { e.stopPropagation(); handleScroll('left'); }}
-                className="no-drag absolute left-0 top-0 bottom-0 w-10 z-[60] bg-gradient-to-r from-black/80 to-transparent flex items-center justify-center text-white/50 hover:text-white hover:bg-black/60 transition-all opacity-0 group-hover/keyboard:opacity-100"
+                className="no-drag absolute left-0 top-1/2 -translate-y-1/2 z-[60] ml-1 w-8 h-16 rounded-full bg-zinc-800/70 backdrop-blur-sm border border-zinc-700/50 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-700/90 hover:border-zinc-600 transition-all shadow-lg active:scale-95"
             >
-                <svg className="w-8 h-8 drop-shadow-lg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M15 19l-7-7 7-7" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" /></svg>
             </button>
 
             {/* SCROLL AREA */}
@@ -541,9 +872,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
             <button 
                 onMouseDown={(e) => { e.stopPropagation(); handleScroll('right'); }}
                 onTouchStart={(e) => { e.stopPropagation(); handleScroll('right'); }}
-                className="no-drag absolute right-0 top-0 bottom-0 w-10 z-[60] bg-gradient-to-l from-black/80 to-transparent flex items-center justify-center text-white/50 hover:text-white hover:bg-black/60 transition-all opacity-0 group-hover/keyboard:opacity-100"
+                className="no-drag absolute right-0 top-1/2 -translate-y-1/2 z-[60] mr-1 w-8 h-16 rounded-full bg-zinc-800/70 backdrop-blur-sm border border-zinc-700/50 flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-700/90 hover:border-zinc-600 transition-all shadow-lg active:scale-95"
             >
-                <svg className="w-8 h-8 drop-shadow-lg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M9 5l7 7-7 7" /></svg>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>
             </button>
         </div>
 
@@ -610,6 +941,36 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                         <button onClick={() => setTranspose(t => t+1)} className="flex-1 hover:bg-zinc-700 rounded text-xs py-1 text-zinc-400">+</button>
                     </div>
                  </div>
+
+                 {/* Training Mode Section */}
+                 <div className="border-t border-white/10 pt-3">
+                    <div className="text-[10px] font-bold text-zinc-500 uppercase mb-2">Training Mode</div>
+                    
+                    {/* Falling Notes Toggle */}
+                    <div className="flex items-center justify-between mb-2">
+                       <span className="text-xs text-zinc-400">Falling Notes</span>
+                       <button 
+                         onClick={() => setShowFallingNotes(!showFallingNotes)}
+                         className={`relative w-10 h-5 rounded-full transition-colors ${showFallingNotes ? 'bg-indigo-500' : 'bg-zinc-700'}`}
+                       >
+                         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${showFallingNotes ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                       </button>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 mb-2">Shows visual guides when playing MIDI files</p>
+                    
+                    {/* Training Mode Toggle */}
+                    <div className="flex items-center justify-between">
+                       <span className="text-xs text-zinc-400">Wait for Input</span>
+                       <button 
+                         onClick={() => setTrainingModeEnabled(!trainingModeEnabled)}
+                         className={`relative w-10 h-5 rounded-full transition-colors ${trainingModeEnabled ? 'bg-green-500' : 'bg-zinc-700'}`}
+                         title="When enabled, MIDI playback will wait for you to press the correct key"
+                       >
+                         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${trainingModeEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                       </button>
+                    </div>
+                    <p className="text-[9px] text-zinc-600 mt-1">Pauses until you press the correct key</p>
+                 </div>
              </div>
         )}
 
@@ -660,6 +1021,51 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                     )}
                  </div>
                  
+                 {/* Transport Controls - Show when MIDI is playing */}
+                 {isPlayingMidi && currentMidi && (
+                   <div className="px-3 py-2 border-b border-white/5 bg-indigo-500/5">
+                     <div className="flex items-center justify-center gap-4">
+                       {/* Rewind 5 seconds */}
+                       <button 
+                         onClick={() => seekMidi(-5)}
+                         className="p-2 text-zinc-400 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+                         title="Rewind 5 seconds"
+                       >
+                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0019 16V8a1 1 0 00-1.6-.8l-5.333 4zM4.066 11.2a1 1 0 000 1.6l5.334 4A1 1 0 0011 16V8a1 1 0 00-1.6-.8l-5.334 4z" />
+                         </svg>
+                       </button>
+                       
+                       {/* Restart from beginning */}
+                       <button 
+                         onClick={restartMidi}
+                         className="p-2 text-zinc-400 hover:text-green-400 hover:bg-green-500/10 rounded-full transition-colors"
+                         title="Restart from beginning"
+                       >
+                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                         </svg>
+                       </button>
+                       
+                       {/* Fast forward 5 seconds */}
+                       <button 
+                         onClick={() => seekMidi(5)}
+                         className="p-2 text-zinc-400 hover:text-white hover:bg-white/10 rounded-full transition-colors"
+                         title="Forward 5 seconds"
+                       >
+                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.933 12.8a1 1 0 000-1.6L6.6 7.2A1 1 0 005 8v8a1 1 0 001.6.8l5.333-4zM19.933 12.8a1 1 0 000-1.6l-5.333-4A1 1 0 0013 8v8a1 1 0 001.6.8l5.333-4z" />
+                         </svg>
+                       </button>
+                     </div>
+                     
+                     {/* Playback time display */}
+                     <div className="text-center text-[10px] text-zinc-500 mt-1">
+                       {formatTime(midiPlaybackTime)} / {formatTime(Math.max(...currentMidi.events.map(e => e.startTime + e.duration)))}
+                     </div>
+                   </div>
+                 )}
+                 
                  {/* Tempo Control */}
                  <div className="px-3 py-2 border-b border-white/5 bg-zinc-900/50">
                     <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
@@ -671,12 +1077,12 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
                         min="25" 
                         max="200" 
                         value={midiTempo} 
-                        onChange={(e) => setMidiTempo(Number(e.target.value))} 
+                        onChange={(e) => handleTempoChange(Number(e.target.value))} 
                         className="w-full h-1 bg-zinc-700 rounded-full appearance-none cursor-pointer accent-indigo-500"
                     />
                     <div className="flex justify-between text-[10px] text-zinc-600 mt-1">
                         <span>Slow</span>
-                        <button onClick={() => setMidiTempo(100)} className="text-indigo-400 hover:underline">Reset</button>
+                        <button onClick={() => handleTempoChange(100)} className="text-indigo-400 hover:underline">Reset</button>
                         <span>Fast</span>
                     </div>
                  </div>
@@ -719,6 +1125,13 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
 
       </div>
   );
+};
+
+// Helper function to format time in MM:SS format
+const formatTime = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
 // --- INTERNAL PIANO KEY (Unchanged logic, just Memoized) ---

@@ -11,19 +11,33 @@ import { midiToNoteName } from "../audio/musicUtils";
 export class SimpleMidiParser {
   
   public static async parse(file: File): Promise<SongSequence> {
+    Logger.log('info', 'SimpleMidiParser: Starting parse', { fileName: file.name, size: file.size, type: file.type });
+    
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
+      
       reader.onload = (e) => {
         try {
           const buffer = e.target?.result as ArrayBuffer;
-          if (!buffer) throw new Error("Empty buffer");
+          if (!buffer) {
+            Logger.log('error', 'SimpleMidiParser: Empty buffer received');
+            throw new Error("Empty buffer");
+          }
+          Logger.log('info', 'SimpleMidiParser: Buffer loaded', { byteLength: buffer.byteLength });
           const sequence = this.decodeMidi(buffer, file.name);
+          Logger.log('info', 'SimpleMidiParser: Parse complete', { eventCount: sequence.events.length, bpm: sequence.bpm });
           resolve(sequence);
         } catch (err) {
-          Logger.log('error', 'MIDI Parse Failed', {}, err as Error);
+          Logger.log('error', 'MIDI Parse Failed', { fileName: file.name }, err as Error);
           reject(err);
         }
       };
+      
+      reader.onerror = (e) => {
+        Logger.log('error', 'SimpleMidiParser: FileReader error', { error: reader.error?.message });
+        reject(new Error(`Failed to read file: ${reader.error?.message}`));
+      };
+      
       reader.readAsArrayBuffer(file);
     });
   }

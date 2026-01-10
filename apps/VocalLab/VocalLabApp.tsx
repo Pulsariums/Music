@@ -25,6 +25,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [softModeEnabled, setSoftModeEnabled] = useState(false);
   const [spatialAudioEnabled, setSpatialAudioEnabled] = useState(false);
+  const [isToolbarVisible, setIsToolbarVisible] = useState(true); // Toolbar visibility toggle
 
   // Recording
   const [isRecording, setIsRecording] = useState(false);
@@ -41,6 +42,7 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
   // MIDI Files
   const [midiFiles, setMidiFiles] = useState<SavedMidiFile[]>([]);
+  const [showMidiLibrary, setShowMidiLibrary] = useState(false);
   
   // Session Management
   const [showSessionMenu, setShowSessionMenu] = useState(false);
@@ -53,6 +55,10 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   const [isConverting, setIsConverting] = useState(false);
   const mp3FileInputRef = useRef<HTMLInputElement>(null);
 
+  // Debug Console (for mobile debugging)
+  const [showDebugConsole, setShowDebugConsole] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<Array<{level: string, msg: string, time: string}>>([]);
+
   // Refs
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -64,6 +70,21 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
   const sessionFileInputRef = useRef<HTMLInputElement>(null);
   
   const playingSequenceNotes = useRef<Map<number, number>>(new Map());
+
+  // Debug console configuration
+  const DEBUG_LOG_LIMIT = 50;
+
+  // Subscribe to Logger for debug console
+  useEffect(() => {
+    const unsubscribe = Logger.subscribe((logs) => {
+      setDebugLogs(logs.slice(0, DEBUG_LOG_LIMIT).map(l => ({
+        level: l.level,
+        msg: l.message,
+        time: new Date(l.timestamp).toLocaleTimeString()
+      })));
+    });
+    return () => unsubscribe();
+  }, []);
 
   // --- WORKSPACE MANAGEMENT ---
   const addPiano = () => {
@@ -336,57 +357,83 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
 
 
   // --- GENERIC HANDLERS ---
+  
+  // Shared MIDI file processing logic
+  const processMidiFile = async (file: File, source: string): Promise<boolean> => {
+    Logger.log('info', `Processing MIDI file (${source})`, { name: file.name, size: file.size, type: file.type });
+    
+    // Validate file extension
+    const fileName = file.name.toLowerCase();
+    if (!fileName.endsWith('.mid') && !fileName.endsWith('.midi')) {
+        alert('Please select a valid MIDI file (.mid or .midi)');
+        return false;
+    }
+    
+    try {
+        const seq = await SimpleMidiParser.parse(file);
+        
+        if (!seq || !seq.events || seq.events.length === 0) {
+            Logger.log('warn', `MIDI file parsed but no notes found (${source})`);
+            alert('MIDI file was parsed but no notes were found. Try a different file.');
+            return false;
+        }
+        
+        const midiFile: SavedMidiFile = {
+          id: crypto.randomUUID(),
+          name: file.name.replace('.mid', '').replace('.midi', ''),
+          sequence: seq,
+          createdAt: Date.now()
+        };
+        Logger.log('info', 'Saving MIDI to DB', { id: midiFile.id, name: midiFile.name, eventCount: seq.events.length });
+        await SessionRepository.saveMidiFile(midiFile);
+        await loadMidiFiles();
+        Logger.log('info', 'MIDI file added to library', { name: midiFile.name });
+        alert(`MIDI file "${midiFile.name}" added to library! Open any piano's MIDI menu to play it.`);
+        return true;
+    } catch(err) { 
+        Logger.log('error', `MIDI import failed (${source})`, {}, err as Error);
+        const errorMessage = (err as Error).message || 'Unknown error';
+        alert(`Failed to import MIDI file: ${errorMessage}\n\nOpen the Debug Console (🐛 button) for details.`); 
+        return false;
+    }
+  };
+  
   // Import MIDI to library (doesn't auto-play)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-        try {
-            const file = e.target.files[0];
-            const seq = await SimpleMidiParser.parse(file);
-            const midiFile: SavedMidiFile = {
-              id: crypto.randomUUID(),
-              name: file.name.replace('.mid', '').replace('.midi', ''),
-              sequence: seq
-            };
-            await SessionRepository.saveMidiFile(midiFile);
-            await loadMidiFiles();
-            Logger.log('info', 'MIDI file added to library', { name: midiFile.name });
-            alert(`MIDI file "${midiFile.name}" added to library! Open any piano's MIDI menu to play it.`);
-        } catch(e) { 
-            alert("Failed to import MIDI file"); 
-        }
+    Logger.log('info', 'handleFileUpload triggered', { hasFiles: !!e.target.files, fileCount: e.target.files?.length });
+    if (!e.target.files || e.target.files.length === 0) {
+        Logger.log('info', 'No file selected or dialog cancelled');
+        return;
     }
-    // Reset input
+    
+    await processMidiFile(e.target.files[0], 'toolbar');
+    
+    // Always reset input to allow re-importing same file
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // --- MIDI FILE MANAGEMENT ---
   const loadMidiFiles = async () => {
     try {
+      Logger.log('info', 'Loading MIDI files from DB');
       const files = await SessionRepository.getAllMidiFiles();
+      Logger.log('info', 'MIDI files loaded', { count: files.length });
       setMidiFiles(files);
     } catch (e) {
-      Logger.log('error', 'Failed to load MIDI files');
+      Logger.log('error', 'Failed to load MIDI files', {}, e as Error);
     }
   };
 
   const handleMidiImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      try {
-        const file = e.target.files[0];
-        const seq = await SimpleMidiParser.parse(file);
-        const midiFile: SavedMidiFile = {
-          id: crypto.randomUUID(),
-          name: file.name.replace('.mid', '').replace('.midi', ''),
-          sequence: seq
-        };
-        await SessionRepository.saveMidiFile(midiFile);
-        await loadMidiFiles();
-        Logger.log('info', 'MIDI file imported', { name: midiFile.name });
-      } catch (e) {
-        alert("Failed to import MIDI file");
-      }
+    Logger.log('info', 'handleMidiImport triggered', { hasFiles: !!e.target.files, fileCount: e.target.files?.length });
+    if (!e.target.files || e.target.files.length === 0) {
+        Logger.log('info', 'No file selected or dialog cancelled (library modal)');
+        return;
     }
-    // Reset input
+    
+    await processMidiFile(e.target.files[0], 'library modal');
+    
+    // Always reset input to allow re-importing same file
     if (midiFileInputRef.current) midiFileInputRef.current.value = '';
   };
 
@@ -399,6 +446,16 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
     a.download = `${sequence.title || 'midi'}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleDeleteMidiFile = async (id: string) => {
+    try {
+      await SessionRepository.deleteMidiFile(id);
+      setMidiFiles(prev => prev.filter(m => m.id !== id));
+      Logger.log('info', 'MIDI file deleted', { id });
+    } catch (e) {
+      Logger.log('error', 'Failed to delete MIDI file', { id }, e as Error);
+    }
   };
 
   // --- SESSION MANAGEMENT ---
@@ -590,92 +647,142 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             )}
         </div>
 
-        {/* 2. TOP TOOLBAR */}
-        <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[100] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 max-w-full overflow-x-auto">
-            
-            {/* Add Piano Button */}
-            <button 
-                onClick={addPiano}
-                className="flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-1.5 sm:py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg sm:rounded-xl transition-all active:scale-95 group"
-            >
-                <span className="text-base sm:text-lg font-bold">+</span>
-                <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider hidden xs:inline">Piano</span>
-            </button>
-
-            <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
-
-            {/* Recorder Toggle */}
-            <button 
-                onClick={handleToggleRecording}
-                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${isRecording ? 'bg-red-500/20 text-red-500 border border-red-500/50' : 'hover:bg-white/10 text-zinc-400'}`}
-                title={isRecording ? "Stop Recording" : "Start Global Recording"}
-            >
-                <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-current'}`} />
-            </button>
-
-            {/* Recordings Library Toggle */}
-            <button 
-                onClick={() => setShowLibrary(!showLibrary)}
-                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showLibrary ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-zinc-400'}`}
-                title="Recordings Library"
-            >
-                 <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
-            </button>
-
-            {/* MP3 to MIDI Converter */}
-            <button 
-                onClick={() => setShowMp3Converter(!showMp3Converter)}
-                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showMp3Converter ? 'bg-purple-500/30 text-purple-400' : 'hover:bg-white/10 text-zinc-400'}`}
-                title="MP3 to MIDI Converter"
-            >
-                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
-            </button>
-
-            {/* MIDI Tools */}
-            <button onClick={() => fileInputRef.current?.click()} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0" title="Import MIDI">
-                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-            </button>
-            <input ref={fileInputRef} type="file" accept=".mid" hidden onChange={handleFileUpload} />
-
-            {currentSequence && (
-                <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl flex-shrink-0 ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
-                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24"><path d={isPlayingSeq ? "M6 4h4v16H6zM14 4h4v16h-4z" : "M8 5v14l11-7z"}/></svg>
-                </button>
-            )}
-
-            <button 
-                onClick={() => {
-                    if (!document.fullscreenElement) containerRef.current?.requestFullscreen();
-                    else document.exitFullscreen();
-                }}
-                className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0 hidden sm:flex"
-            >
-                 <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-            </button>
-
-            <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
-
-            {/* Session Management */}
-            <button 
-                onClick={() => setShowSessionMenu(!showSessionMenu)}
-                className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showSessionMenu ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
-                title="Session Manager"
-            >
-                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
-            </button>
-
-            {/* MIDI Editor */}
-            {onNavigate && (
+        {/* 2. TOP TOOLBAR - Unified toolbar with all controls */}
+        {isToolbarVisible ? (
+            <div className="absolute top-2 left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[1000] flex flex-wrap items-center justify-center gap-1 sm:gap-2 p-1.5 bg-black/60 backdrop-blur-xl border border-white/10 rounded-xl sm:rounded-2xl shadow-2xl transition-all hover:bg-black/80 sm:max-w-full overflow-x-auto">
+                
+                {/* Hide Toolbar Button */}
                 <button 
-                    onClick={() => onNavigate(AppID.MIDI_EDITOR)}
+                    onClick={() => setIsToolbarVisible(false)}
                     className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0"
-                    title="MIDI Editor"
+                    title="Hide Toolbar"
                 >
-                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" /></svg>
                 </button>
-            )}
 
-        </div>
+                <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
+
+                {/* Add Piano Button */}
+                <button 
+                    onClick={addPiano}
+                    className="flex items-center gap-1 sm:gap-2 px-2 sm:px-4 py-1.5 sm:py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg sm:rounded-xl transition-all active:scale-95 group"
+                >
+                    <span className="text-base sm:text-lg font-bold">+</span>
+                    <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider hidden xs:inline">Piano</span>
+                </button>
+
+                <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
+
+                {/* Recorder Toggle */}
+                <button 
+                    onClick={handleToggleRecording}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${isRecording ? 'bg-red-500/20 text-red-500 border border-red-500/50' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title={isRecording ? "Stop Recording" : "Start Global Recording"}
+                >
+                    <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-current'}`} />
+                </button>
+
+                {/* Recordings Library Toggle */}
+                <button 
+                    onClick={() => setShowLibrary(!showLibrary)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showLibrary ? 'bg-white/20 text-white' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="Recordings Library"
+                >
+                     <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" /></svg>
+                </button>
+
+                {/* MIDI Library Toggle */}
+                <button 
+                    onClick={() => setShowMidiLibrary(!showMidiLibrary)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showMidiLibrary ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="MIDI Library"
+                >
+                     <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                </button>
+
+                {/* MP3 to MIDI Converter */}
+                <button 
+                    onClick={() => setShowMp3Converter(!showMp3Converter)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showMp3Converter ? 'bg-purple-500/30 text-purple-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="MP3 to MIDI Converter"
+                >
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+                </button>
+
+                {/* MIDI Tools */}
+                <button onClick={() => fileInputRef.current?.click()} className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0" title="Import MIDI">
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                </button>
+
+                {currentSequence && (
+                    <button onClick={() => setIsPlayingSeq(!isPlayingSeq)} className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl flex-shrink-0 ${isPlayingSeq ? 'bg-green-500/20 text-green-500' : 'hover:bg-white/10 text-zinc-400'}`}>
+                        <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="currentColor" viewBox="0 0 24 24"><path d={isPlayingSeq ? "M6 4h4v16H6zM14 4h4v16h-4z" : "M8 5v14l11-7z"}/></svg>
+                    </button>
+                )}
+
+                <button 
+                    onClick={() => {
+                        if (!document.fullscreenElement) containerRef.current?.requestFullscreen();
+                        else document.exitFullscreen();
+                    }}
+                    className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0 hidden sm:flex"
+                >
+                     <svg className="w-3 h-3 sm:w-4 sm:h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+                </button>
+
+                <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
+
+                {/* Session Management */}
+                <button 
+                    onClick={() => setShowSessionMenu(!showSessionMenu)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showSessionMenu ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="Session Manager"
+                >
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>
+                </button>
+
+                {/* MIDI Editor */}
+                {onNavigate && (
+                    <button 
+                        onClick={() => onNavigate(AppID.MIDI_EDITOR)}
+                        className="w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl hover:bg-white/10 text-zinc-400 flex-shrink-0"
+                        title="MIDI Editor"
+                    >
+                        <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                    </button>
+                )}
+
+                <div className="hidden sm:block w-px h-6 bg-white/10 mx-1 sm:mx-2" />
+
+                {/* Debug Console Toggle */}
+                <button 
+                    onClick={() => setShowDebugConsole(!showDebugConsole)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showDebugConsole ? 'bg-red-500/30 text-red-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="Debug Console"
+                >
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" /></svg>
+                </button>
+                
+                {/* Audio Settings Toggle */}
+                <button 
+                    onClick={() => setShowAudioSettings(!showAudioSettings)}
+                    className={`w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg sm:rounded-xl transition-all flex-shrink-0 ${showAudioSettings ? 'bg-indigo-500/30 text-indigo-400' : 'hover:bg-white/10 text-zinc-400'}`}
+                    title="Audio Settings"
+                >
+                    <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
+                </button>
+
+            </div>
+        ) : (
+            /* Show Toolbar Button - when toolbar is hidden */
+            <button 
+                onClick={() => setIsToolbarVisible(true)}
+                className="absolute top-2 left-1/2 -translate-x-1/2 z-[1000] w-10 h-10 flex items-center justify-center rounded-xl bg-black/60 hover:bg-black/80 text-zinc-400 hover:text-white backdrop-blur-xl border border-white/10 transition-all"
+                title="Show Toolbar"
+            >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </button>
+        )}
 
         {/* SESSION MENU DROPDOWN */}
         {showSessionMenu && (
@@ -734,10 +841,35 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             </div>
         )}
 
-        {/* Hidden file inputs */}
-        <input ref={midiFileInputRef} type="file" accept=".mid,.midi" hidden onChange={handleMidiImport} />
-        <input ref={sessionFileInputRef} type="file" accept=".json" hidden onChange={handleSessionImport} />
-        <input ref={mp3FileInputRef} type="file" accept=".mp3,.wav,.m4a,.ogg,.flac" hidden onChange={handleMp3Upload} />
+        {/* Hidden file inputs - using hidden for proper hiding */}
+        <input 
+            ref={fileInputRef} 
+            type="file" 
+            accept=".mid,.midi,audio/midi,audio/x-midi" 
+            hidden
+            onChange={handleFileUpload} 
+        />
+        <input 
+            ref={midiFileInputRef} 
+            type="file" 
+            accept=".mid,.midi,audio/midi,audio/x-midi" 
+            hidden
+            onChange={handleMidiImport} 
+        />
+        <input 
+            ref={sessionFileInputRef} 
+            type="file" 
+            accept=".json,application/json" 
+            hidden
+            onChange={handleSessionImport} 
+        />
+        <input 
+            ref={mp3FileInputRef} 
+            type="file" 
+            accept=".mp3,.wav,.m4a,.ogg,.flac,audio/*" 
+            hidden
+            onChange={handleMp3Upload} 
+        />
 
         {/* MP3 TO MIDI CONVERTER MODAL */}
         {showMp3Converter && (
@@ -828,19 +960,44 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
             </div>
         )}
 
-        {/* AUDIO SETTINGS (Top Right) */}
-        <div className="absolute top-4 right-4 z-[100]">
-            <button 
-                onClick={() => setShowAudioSettings(!showAudioSettings)}
-                className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showAudioSettings ? 'bg-indigo-500/30 text-indigo-400' : 'bg-black/60 hover:bg-black/80 text-zinc-400 hover:text-white'} backdrop-blur-xl border border-white/10`}
-                title="Audio Settings"
-            >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
-            </button>
+        {/* DEBUG CONSOLE PANEL */}
+        {showDebugConsole && (
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 w-[90vw] max-w-md bg-black/95 backdrop-blur-xl border border-red-500/30 rounded-xl shadow-2xl z-[1100] overflow-hidden">
+                <div className="flex items-center justify-between p-3 border-b border-white/10 bg-red-500/10">
+                    <h3 className="font-bold text-red-400 flex items-center gap-2 text-sm">
+                        <span>🐛</span> Debug Console
+                    </h3>
+                    <div className="flex gap-2">
+                        <button 
+                            onClick={() => Logger.clear()} 
+                            className="text-xs px-2 py-1 bg-red-500/20 text-red-400 rounded hover:bg-red-500/30"
+                        >
+                            Clear
+                        </button>
+                        <button onClick={() => setShowDebugConsole(false)} className="text-zinc-500 hover:text-white">✕</button>
+                    </div>
+                </div>
+                <div className="max-h-[50vh] overflow-y-auto p-2 font-mono text-xs">
+                    {debugLogs.length === 0 ? (
+                        <div className="text-center text-zinc-500 py-4">No logs yet. Try importing a MIDI file or recording.</div>
+                    ) : (
+                        debugLogs.map((log, i) => (
+                            <div key={i} className={`py-1 px-2 rounded mb-1 ${
+                                log.level === 'error' ? 'bg-red-500/20 text-red-300' :
+                                log.level === 'warn' ? 'bg-yellow-500/20 text-yellow-300' :
+                                'bg-white/5 text-zinc-300'
+                            }`}>
+                                <span className="text-zinc-500">[{log.time}]</span> {log.msg}
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        )}
 
-            {showAudioSettings && (
-                <div className="absolute top-12 right-0 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3">
-                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
+        {showAudioSettings && (
+            <div className="absolute top-16 left-1/2 -translate-x-1/2 w-56 bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-2xl p-3 space-y-3 z-[1100]">
+                <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Audio Effects</div>
                     
                     {/* Soft Mode Toggle */}
                     <button 
@@ -877,7 +1034,6 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
                     </button>
                 </div>
             )}
-        </div>
 
         {/* 3. RECORDINGS LIBRARY MODAL */}
         {showLibrary && (
@@ -958,7 +1114,70 @@ export const VocalLabApp: React.FC<VocalLabAppProps> = ({ onNavigate }) => {
              </div>
         )}
 
-        {/* 4. WORKSPACE ITEMS */}
+        {/* 4. MIDI LIBRARY MODAL */}
+        {showMidiLibrary && (
+             <div className="absolute top-24 left-1/2 -translate-x-1/2 w-[90vw] max-w-md bg-[#18181b]/95 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl z-[200] flex flex-col max-h-[60vh] overflow-hidden animate-fade-in">
+                 <div className="flex items-center justify-between p-4 border-b border-white/10">
+                     <h3 className="font-bold text-white flex items-center gap-2">
+                        <span className="text-indigo-400">●</span> MIDI Library
+                     </h3>
+                     <button onClick={() => setShowMidiLibrary(false)} className="text-zinc-500 hover:text-white">✕</button>
+                 </div>
+                 
+                 {/* Quick Actions */}
+                 <div className="p-3 border-b border-white/10 flex gap-2">
+                     <button 
+                         onClick={() => fileInputRef.current?.click()}
+                         className="flex-1 flex items-center justify-center gap-2 py-2 bg-indigo-500/20 text-indigo-400 rounded-lg hover:bg-indigo-500/30 text-xs font-medium"
+                     >
+                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+                         Import MIDI
+                     </button>
+                 </div>
+                 
+                 <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                     {midiFiles.length === 0 ? (
+                         <div className="text-center p-8 text-zinc-500 text-sm">
+                             No MIDI files found.<br/>Import a .mid or .midi file to get started.
+                         </div>
+                     ) : (
+                         midiFiles.map(midi => (
+                             <div key={midi.id} className="rounded-lg p-3 flex items-center gap-3 group transition-colors bg-white/5 hover:bg-white/10">
+                                 <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 bg-indigo-500/20 text-indigo-400">
+                                     🎹
+                                 </div>
+                                 <div className="flex-1 min-w-0">
+                                     <div className="text-sm font-medium text-white truncate">
+                                         {midi.name}
+                                     </div>
+                                     <div className="text-xs text-zinc-500">{midi.sequence.events.length} notes • {midi.sequence.bpm || 120} BPM</div>
+                                 </div>
+                                 <div className="flex items-center gap-1">
+                                     {/* Export as JSON */}
+                                     <button 
+                                        onClick={() => handleMidiExport(midi.sequence)}
+                                        className="p-2 hover:bg-white/10 rounded-lg text-zinc-300 hover:text-white"
+                                        title="Export as JSON"
+                                     >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                     </button>
+                                     {/* Delete */}
+                                     <button 
+                                        onClick={() => handleDeleteMidiFile(midi.id)}
+                                        className="p-2 hover:bg-red-500/20 rounded-lg text-zinc-500 hover:text-red-400"
+                                        title="Delete"
+                                     >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                     </button>
+                                 </div>
+                             </div>
+                         ))
+                     )}
+                 </div>
+             </div>
+        )}
+
+        {/* 5. WORKSPACE ITEMS */}
         {items.map(item => (
             <FloatingPiano 
                 key={item.instanceId}
