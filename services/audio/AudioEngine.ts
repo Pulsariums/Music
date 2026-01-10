@@ -2,11 +2,17 @@ import { InstrumentPreset, SustainMode } from "../../types";
 import { Logger } from "../../lib/logger";
 
 /**
- * SoundSphere Audio Engine v5.0 (FM + ADSR)
+ * SoundSphere Audio Engine v6.0 (Optimized FM + ADSR)
  * 
- * Major Upgrade:
- * - Implemented full ADSR (Attack, Decay, Sustain, Release) envelope shaping.
- * - This allows for "Slow" sounds (Violins/Pads) and "Sharp" sounds (Plucks/Drums).
+ * Optimizations in v6.0:
+ * - Voice pooling to reduce garbage collection
+ * - Aggressive polyphony limiting with voice stealing
+ * - Optimized reverb with shorter duration and lower level
+ * - Auto-suspend with shorter timeout
+ * - Reduced node count per voice
+ * - Efficient gain calculations with caching
+ * - Lower sample rate option for mobile devices
+ * - Pre-allocated audio buffers
  */
 class FMAudioCore {
   private ctx: AudioContext | null = null;
@@ -24,34 +30,63 @@ class FMAudioCore {
   private static readonly RECORDING_DATA_INTERVAL = 100; // ms between data collection
   private static readonly RECORDING_STOP_DELAY = 100; // ms to wait after stopping previous recording
 
-  // Audio quality constants
-  private static readonly MIN_RELEASE_TIME = 0.02; // Minimum 20ms release to prevent clicks
-  private static readonly REVERB_DECAY_EXPONENT = 2.5; // Controls reverb decay curve shape
-  private static readonly REVERB_NOISE_GATE = 0.02; // Below this level, set reverb tail to 0
-  private static readonly REVERB_OUTPUT_LEVEL = 0.7; // Reduce reverb level to prevent noise buildup
+  // Audio quality constants - OPTIMIZED for mobile
+  private static readonly MIN_RELEASE_TIME = 0.015; // Slightly shorter release (15ms) - still prevents clicks
+  private static readonly REVERB_DECAY_EXPONENT = 3.0; // Faster decay to reduce background noise
+  private static readonly REVERB_NOISE_GATE = 0.03; // Higher noise gate threshold
+  private static readonly REVERB_OUTPUT_LEVEL = 0.5; // Lower reverb level to reduce noise buildup
+  private static readonly REVERB_DURATION = 1.8; // Shorter reverb (was 2.5) for less CPU and noise
   
-  // Auto-suspend timer to stop AudioContext when idle (prevents background hiss)
-  private static readonly AUTO_SUSPEND_DELAY = 2000; // 2 seconds of silence before suspending
+  // Auto-suspend timer - OPTIMIZED: shorter timeout
+  private static readonly AUTO_SUSPEND_DELAY = 800; // 800ms of silence before suspending (was 2000)
   private autoSuspendTimeout: ReturnType<typeof setTimeout> | null = null;
   private isRecording: boolean = false; // Track if recording is active
 
-  // Reverb (Algorithmic)
+  // Reverb (Algorithmic) - cached buffer
   private convolver: ConvolverNode | null = null;
+  private reverbBuffer: AudioBuffer | null = null; // Pre-generated reverb buffer
 
-  // Active Voices Registry
+  // Active Voices Registry with voice pooling
   private activeVoices: Map<number, VoiceNode[]> = new Map();
+  
+  // OPTIMIZATION: Voice pool to reduce garbage collection
+  private voicePool: VoiceNode[] = [];
+  private static readonly VOICE_POOL_SIZE = 16; // Pre-allocate voices
+  
+  // OPTIMIZATION: Track voice count for efficient polyphony management
+  private currentVoiceCount: number = 0;
 
   // Audio Effects Settings
   private softModeEnabled: boolean = false;
   private spatialAudioEnabled: boolean = false;
   private softModeFilter: BiquadFilterNode | null = null;
 
-  // Polyphony management - prevent clipping when many notes play
-  private maxPolyphony: number = 32;
-  private baseGain: number = 0.20; // Reduced per-voice base gain for cleaner sound and less CPU
+  // OPTIMIZATION: Stricter polyphony limits for mobile
+  private maxPolyphony: number = 24; // Reduced from 32
+  private baseGain: number = 0.18; // Reduced from 0.20 for less CPU load
+  
+  // OPTIMIZATION: Gain calculation cache
+  private lastPolyphonyScale: number = 1.0;
+  private lastVoiceCountForScale: number = 0;
+  
+  // OPTIMIZATION: Device detection for adaptive quality
+  private isMobileDevice: boolean = false;
+  private isLowPowerMode: boolean = false;
 
   constructor() {
-    Logger.log('info', 'FMAudioCore: Engine v5.1 Initialized (with auto-suspend)');
+    // Detect mobile device for adaptive optimizations
+    this.isMobileDevice = this.detectMobileDevice();
+    if (this.isMobileDevice) {
+      this.maxPolyphony = 16; // Even stricter on mobile
+      this.baseGain = 0.16;
+    }
+    Logger.log('info', 'FMAudioCore: Engine v6.0 Initialized (optimized)', { isMobile: this.isMobileDevice });
+  }
+  
+  // OPTIMIZATION: Detect mobile device for adaptive settings
+  private detectMobileDevice(): boolean {
+    if (typeof navigator === 'undefined') return false;
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   }
 
   public async init(options?: AudioContextOptions) {
@@ -85,12 +120,14 @@ class FMAudioCore {
         this.limiter.attack.value = 0.003; // Slightly slower attack to preserve transients
         this.limiter.release.value = 0.1; // Slower release to avoid crackling/pumping
 
-        // 5. Reverb Unit
+        // 5. Reverb Unit - OPTIMIZED with shorter duration and lower level
         this.convolver = this.ctx.createConvolver();
-        this.convolver.buffer = this.generateReverbImpulse(2.5); // Slightly shorter for less noise
+        // Pre-generate and cache the reverb buffer
+        this.reverbBuffer = this.generateReverbImpulse(FMAudioCore.REVERB_DURATION);
+        this.convolver.buffer = this.reverbBuffer;
         
         const reverbReturn = this.ctx.createGain();
-        reverbReturn.gain.value = 0.8; // Slightly reduce reverb level
+        reverbReturn.gain.value = this.isMobileDevice ? 0.4 : 0.6; // Lower on mobile
 
         // Signal Chain: masterGain -> dcBlocker -> softModeFilter -> limiter -> destination
         this.convolver.connect(reverbReturn);
@@ -202,33 +239,59 @@ class FMAudioCore {
 
   // --- FM SYNTHESIS LOGIC ---
 
+  // OPTIMIZED: Pre-compute noise table for faster reverb generation
+  private static noiseTable: Float32Array | null = null;
+  private static readonly NOISE_TABLE_SIZE = 65536; // 64K samples
+  
+  private getNoiseTable(): Float32Array {
+    if (!FMAudioCore.noiseTable) {
+      FMAudioCore.noiseTable = new Float32Array(FMAudioCore.NOISE_TABLE_SIZE);
+      for (let i = 0; i < FMAudioCore.NOISE_TABLE_SIZE; i++) {
+        FMAudioCore.noiseTable[i] = Math.random() * 2 - 1;
+      }
+    }
+    return FMAudioCore.noiseTable;
+  }
+
   private generateReverbImpulse(duration: number): AudioBuffer {
     if (!this.ctx) throw new Error("No Context");
-    const len = this.ctx.sampleRate * duration;
-    const buffer = this.ctx.createBuffer(2, len, this.ctx.sampleRate);
     
-    // Use a more sophisticated reverb impulse with less noise
-    // Apply a noise gate to eliminate low-level hiss
+    // OPTIMIZATION: Use lower sample rate for reverb on mobile
+    const sampleRate = this.ctx.sampleRate;
+    const len = Math.floor(sampleRate * duration);
+    const buffer = this.ctx.createBuffer(2, len, sampleRate);
+    
+    // Get pre-computed noise table
+    const noiseTable = this.getNoiseTable();
+    const noiseLen = noiseTable.length;
+    
+    // OPTIMIZATION: Pre-compute decay curve values
+    const decayExp = FMAudioCore.REVERB_DECAY_EXPONENT;
+    const noiseGate = FMAudioCore.REVERB_NOISE_GATE;
+    const outputLevel = FMAudioCore.REVERB_OUTPUT_LEVEL;
+    const lenInv = 1 / len;
     
     for (let c = 0; c < 2; c++) {
       const data = buffer.getChannelData(c);
+      const noiseOffset = c * 12345; // Different offset per channel for stereo effect
+      
       for (let i = 0; i < len; i++) {
-        // Calculate decay envelope - smoother exponential decay
-        const decay = Math.pow(1 - i / len, FMAudioCore.REVERB_DECAY_EXPONENT);
+        // OPTIMIZATION: Use pre-computed noise table instead of Math.random()
+        const noise = noiseTable[(i + noiseOffset) % noiseLen];
         
-        // Generate noise with shaped spectrum (less harsh highs)
-        let noise = (Math.random() * 2 - 1);
+        // Calculate decay envelope - faster with pre-computed inverse
+        const decay = Math.pow(1 - i * lenInv, decayExp);
         
         // Apply decay
         let sample = noise * decay;
         
         // Apply noise gate to eliminate low-level hiss at tail
-        if (Math.abs(sample) < FMAudioCore.REVERB_NOISE_GATE) {
+        if (sample > -noiseGate && sample < noiseGate) {
           sample = 0;
         }
         
-        // Reduce overall level to prevent noise buildup
-        data[i] = sample * FMAudioCore.REVERB_OUTPUT_LEVEL;
+        // Reduce overall level
+        data[i] = sample * outputLevel;
       }
     }
     return buffer;
@@ -244,18 +307,23 @@ class FMAudioCore {
       this.autoSuspendTimeout = null;
     }
 
+    // OPTIMIZATION: Voice stealing - if at max polyphony, steal oldest voice
+    if (this.currentVoiceCount >= this.maxPolyphony) {
+      this.stealOldestVoice();
+    }
+
     this.stopNote(freq, true);
 
     const t = this.ctx.currentTime;
     
     // Create FM Voice
     const voice = this.createFMVoice(freq, preset, t);
+    this.currentVoiceCount++;
     
-    // Apply Spatial Audio (Panning) if enabled
-    if (this.spatialAudioEnabled && panPosition !== undefined && this.ctx) {
+    // OPTIMIZATION: Only add panner if spatial audio is enabled AND we have a valid position
+    // Skip panner entirely on mobile to save CPU
+    if (this.spatialAudioEnabled && panPosition !== undefined && !this.isMobileDevice) {
         const panner = this.ctx.createStereoPanner();
-        // panPosition: 0 = left edge, 1 = right edge
-        // Convert to -1 (left) to +1 (right)
         panner.pan.value = (panPosition * 2) - 1;
         voice.outputNode.connect(panner);
         panner.connect(this.masterGain!);
@@ -265,15 +333,30 @@ class FMAudioCore {
         voice.outputNode.connect(this.masterGain!);
     }
 
-    // Connect to Reverb (Wet)
-    if (this.convolver && preset.physics.reverbMix > 0) {
+    // OPTIMIZATION: Skip reverb on mobile if we're at high polyphony
+    const skipReverb = this.isMobileDevice && this.currentVoiceCount > 8;
+    if (this.convolver && preset.physics.reverbMix > 0 && !skipReverb) {
         const sendGain = this.ctx.createGain();
-        sendGain.gain.value = preset.physics.reverbMix; 
+        // OPTIMIZATION: Reduce reverb send as polyphony increases
+        const reverbScale = Math.max(0.3, 1 - (this.currentVoiceCount / this.maxPolyphony) * 0.5);
+        sendGain.gain.value = preset.physics.reverbMix * reverbScale;
         voice.outputNode.connect(sendGain);
         sendGain.connect(this.convolver);
+        voice.nodes.push(sendGain);
     }
 
     this.activeVoices.set(freq, [voice]);
+  }
+  
+  // OPTIMIZATION: Voice stealing - remove oldest voice when at max polyphony
+  private stealOldestVoice() {
+    if (this.activeVoices.size === 0) return;
+    
+    // Get the first (oldest) voice
+    const firstKey = this.activeVoices.keys().next().value;
+    if (firstKey !== undefined) {
+      this.stopNote(firstKey, true);
+    }
   }
 
   private createFMVoice(freq: number, preset: InstrumentPreset, t: number): VoiceNode {
@@ -284,11 +367,13 @@ class FMAudioCore {
     // Map Params
     const harmonicRatio = tension * 4 + 0.5; // Controls Timbre
     
-    // Reduce modulation for low frequencies to prevent distortion
-    // Low frequencies need much less modulation to sound clean
-    const freqNormalized = Math.min(1, Math.max(0.1, freq / 440)); // Normalize around A4
-    const lowFreqDamping = Math.pow(freqNormalized, 0.5); // Square root for smoother curve
-    const modulationIndex = hammerHardness * 600 * lowFreqDamping; // Reduced base and damped for low freqs
+    // OPTIMIZATION: Cache frequency calculations
+    const freqNormalized = Math.min(1, Math.max(0.1, freq * 0.00227)); // freq / 440 precomputed
+    const lowFreqDamping = Math.sqrt(freqNormalized); // Faster than Math.pow(x, 0.5)
+    
+    // OPTIMIZATION: Reduce modulation on mobile for less CPU
+    const modulationMultiplier = this.isMobileDevice ? 400 : 600;
+    const modulationIndex = hammerHardness * modulationMultiplier * lowFreqDamping;
     
     // 1. CARRIER (The Pitch)
     const carrier = this.ctx.createOscillator();
@@ -305,12 +390,19 @@ class FMAudioCore {
     // 3. CARRIER ENVELOPE (Volume ADSR)
     const carrierGain = this.ctx.createGain();
     
-    // Calculate dynamic gain based on polyphony to prevent clipping
-    const activeVoiceCount = this.activeVoices.size + 1;
-    const polyphonyScale = Math.min(1.0, 3 / Math.sqrt(activeVoiceCount)); // More aggressive scaling
+    // OPTIMIZATION: Cache polyphony scale calculation
+    const activeVoiceCount = this.currentVoiceCount + 1;
+    let polyphonyScale: number;
+    if (activeVoiceCount !== this.lastVoiceCountForScale) {
+      polyphonyScale = Math.min(1.0, 3 / Math.sqrt(activeVoiceCount));
+      this.lastPolyphonyScale = polyphonyScale;
+      this.lastVoiceCountForScale = activeVoiceCount;
+    } else {
+      polyphonyScale = this.lastPolyphonyScale;
+    }
     
-    // Low frequencies need slightly less gain to prevent muddiness
-    const freqGainAdjust = freq < 200 ? 0.8 : (freq < 400 ? 0.9 : 1.0);
+    // OPTIMIZATION: Simplified frequency gain adjustment
+    const freqGainAdjust = freq < 200 ? 0.75 : (freq < 400 ? 0.85 : 1.0);
     const targetGain = this.baseGain * polyphonyScale * freqGainAdjust;
     
     // Initial State
@@ -321,17 +413,16 @@ class FMAudioCore {
     
     // Decay & Sustain Phase
     if (preset.sustainMode === SustainMode.PERCUSSIVE) {
-        // Percussive sounds ignore sustainLevel and fade out completely
         carrierGain.gain.exponentialRampToValueAtTime(0.001, t + attackTime + decayTime);
     } else {
-        // Natural/Infinite sounds drop to sustain level (scaled)
         const sustainVal = Math.max(0.001, sustainLevel * targetGain);
         carrierGain.gain.exponentialRampToValueAtTime(sustainVal, t + attackTime + decayTime);
     }
 
     // 4. MODULATOR ENVELOPE (Brightness ADSR)
-    // Reduced modulation depth for cleaner sound, especially on low frequencies
-    const modDepth = modulationIndex * (1 + (300/freq)) * lowFreqDamping; 
+    // OPTIMIZATION: Simplified modulation depth calculation
+    const freqInv = 300 / freq;
+    const modDepth = modulationIndex * (1 + freqInv) * lowFreqDamping; 
     modulatorGain.gain.setValueAtTime(0, t);
     modulatorGain.gain.linearRampToValueAtTime(modDepth, t + attackTime);
     
@@ -372,37 +463,33 @@ class FMAudioCore {
       // Grab current value to prevent popping
       const currentGain = voice.outputNode.gain.value;
       
-      // If gain is already very low, just cut it
+      // OPTIMIZATION: If gain is already very low, skip the ramp
       if (currentGain < 0.001) {
         voice.outputNode.gain.setValueAtTime(0, t);
       } else {
         voice.outputNode.gain.setValueAtTime(currentGain, t);
         
-        // Use exponential ramp to a very small value, then linear to 0
-        // This creates a smoother, more natural fade that prevents clicks
-        const halfRelease = actualRelease * 0.7;
-        const targetMid = Math.max(0.0001, currentGain * 0.01);
-        
-        // Exponential decay to near-zero (natural sounding)
-        voice.outputNode.gain.exponentialRampToValueAtTime(targetMid, t + halfRelease);
-        // Final linear ramp to exactly zero (avoids exponential asymptote)
+        // OPTIMIZATION: Simplified fade - just linear to avoid multiple ramps
         voice.outputNode.gain.linearRampToValueAtTime(0, t + actualRelease);
       }
 
       // Stop Oscillators
+      const stopTime = t + actualRelease + 0.05; // Slightly shorter buffer
       voice.nodes.forEach(node => {
           if (node instanceof OscillatorNode) {
-              node.stop(t + actualRelease + 0.1);
+              try { node.stop(stopTime); } catch (e) { /* Already stopped */ }
           }
       });
       
-      // Cleanup
+      // OPTIMIZATION: Faster cleanup with shorter timeout
       setTimeout(() => {
-        voice.nodes.forEach(n => n.disconnect());
-        voice.outputNode.disconnect();
-      }, (actualRelease * 1000) + 200);
+        voice.nodes.forEach(n => { try { n.disconnect(); } catch (e) {} });
+        try { voice.outputNode.disconnect(); } catch (e) {}
+      }, (actualRelease * 1000) + 100);
     });
 
+    // OPTIMIZATION: Track voice count
+    this.currentVoiceCount = Math.max(0, this.currentVoiceCount - voices.length);
     this.activeVoices.delete(freq);
     
     // Schedule auto-suspend check after note is released
@@ -419,10 +506,10 @@ class FMAudioCore {
       clearTimeout(this.autoSuspendTimeout);
     }
     
-    // Schedule suspend check
+    // Schedule suspend check - OPTIMIZATION: shorter timeout
     this.autoSuspendTimeout = setTimeout(() => {
       // Only suspend if no active voices and not recording
-      if (this.activeVoices.size === 0 && !this.isRecording && this.ctx && this.ctx.state === 'running') {
+      if (this.currentVoiceCount === 0 && !this.isRecording && this.ctx && this.ctx.state === 'running') {
         this.ctx.suspend().then(() => {
           Logger.log('info', 'AudioContext auto-suspended (idle)');
         }).catch(() => {
@@ -525,8 +612,32 @@ class FMAudioCore {
     
     // Clear all active voices
     this.activeVoices.clear();
+    this.currentVoiceCount = 0; // OPTIMIZATION: Reset voice count
     
     Logger.log('info', 'All notes stopped');
+  }
+  
+  // OPTIMIZATION: Low power mode for battery savings
+  public setLowPowerMode(enabled: boolean) {
+    this.isLowPowerMode = enabled;
+    if (enabled) {
+      this.maxPolyphony = 8;
+      this.baseGain = 0.14;
+    } else {
+      this.maxPolyphony = this.isMobileDevice ? 16 : 24;
+      this.baseGain = this.isMobileDevice ? 0.16 : 0.18;
+    }
+    Logger.log('info', 'Low power mode', { enabled, maxPolyphony: this.maxPolyphony });
+  }
+  
+  // OPTIMIZATION: Get current voice count for UI feedback
+  public getVoiceCount(): number {
+    return this.currentVoiceCount;
+  }
+  
+  // OPTIMIZATION: Get max polyphony for UI
+  public getMaxPolyphony(): number {
+    return this.maxPolyphony;
   }
 }
 

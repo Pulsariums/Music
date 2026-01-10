@@ -515,16 +515,26 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   };
   
   // Render falling notes on canvas - notes fall from above the piano and land on the keys
-  // OPTIMIZED: Cache canvas size, reduce redraws, and limit visible notes
+  // OPTIMIZED v2: Frame skipping, cached positions, batch rendering
   const lastCanvasSizeRef = useRef({ width: 0, height: 0 });
   const lastScrollOffsetRef = useRef(0);
   const frameSkipCounterRef = useRef(0);
+  
+  // OPTIMIZATION: Cache note positions to avoid recalculating every frame
+  const notePositionCacheRef = useRef<Map<string, { x: number; width: number; isBlack: boolean } | null>>(new Map());
   
   const renderFallingNotes = (currentTime: number, tempoMultiplier: number) => {
     const canvas = fallingNotesCanvasRef.current;
     const scrollContainer = scrollContainerRef.current;
     const midi = currentMidiRef.current; // Use ref instead of state
     if (!canvas || !scrollContainer || !midi) return;
+    
+    // OPTIMIZATION: Skip frames on mobile for better performance (render at 30fps instead of 60fps)
+    frameSkipCounterRef.current++;
+    const isMobile = window.innerWidth < 768;
+    if (isMobile && frameSkipCounterRef.current % 2 !== 0) {
+      return; // Skip every other frame on mobile
+    }
     
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
@@ -544,28 +554,33 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       canvas.width = visibleWidth;
       canvas.height = pianoKeyboardHeight;
       lastCanvasSizeRef.current = { width: visibleWidth, height: pianoKeyboardHeight };
+      // Clear position cache when size changes (keyWidth might have changed)
+      notePositionCacheRef.current.clear();
     }
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
     // Falling notes configuration
-    // Notes should fall from above the piano and "hit" the keys at the bottom
-    // The "hit line" is where notes reach when it's time to play them
-    // White keys hit at the very bottom, black keys hit at about 65% height (since black keys are shorter)
-    const whiteKeyHitLineY = pianoKeyboardHeight; // White keys hit at the very bottom
-    const blackKeyHitLineY = pianoKeyboardHeight * 0.65; // Black keys are about 65% the height of white keys
-    const lookAheadTime = 3.0; // Show notes 3 seconds before they should be played (increased for more visibility)
-    const pixelsPerSecond = pianoKeyboardHeight / lookAheadTime; // Speed of falling
+    const whiteKeyHitLineY = pianoKeyboardHeight;
+    const blackKeyHitLineY = pianoKeyboardHeight * 0.65;
+    const lookAheadTime = 3.0;
+    const pixelsPerSecond = pianoKeyboardHeight / lookAheadTime;
     
     // Note height scale factor - reduce heights to show more notes at once
-    const noteHeightScale = 0.6; // 60% of original height
+    const noteHeightScale = 0.5; // 50% of original height for even more visibility
     
-    // Map MIDI notes to keyboard positions - must match the actual keyboard rendering
-    // The keyboard starts at px-4 (16px) padding and uses the current keyWidth
+    // OPTIMIZATION: Cached note position lookup with memoization
     const getNotePosition = (noteName: string): { x: number; width: number; isBlack: boolean } | null => {
+      // Check cache first
+      const cached = notePositionCacheRef.current.get(noteName);
+      if (cached !== undefined) return cached;
+      
       // Parse note name (e.g., "C4", "C#4", "Db4")
       const match = noteName.match(/^([A-G])([#b]?)(\d+)$/);
-      if (!match) return null;
+      if (!match) {
+        notePositionCacheRef.current.set(noteName, null);
+        return null;
+      }
       
       const [, letter, accidental, octaveStr] = match;
       const octave = parseInt(octaveStr, 10);
@@ -595,113 +610,113 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
       }
       
       // Calculate absolute white key position from C1
-      // The keyboard renders octaves 1-7 (generateKeyboard(1, 7))
-      const octaveOffset = (octave - 1) * 7; // 7 white keys per octave
+      const octaveOffset = (octave - 1) * 7;
       const whiteKeyPosition = octaveOffset + baseWhiteKeyIndex;
       
       // Calculate X position matching the keyboard layout exactly
-      const startPadding = 16; // px-4 = 16px padding in the keyboard
+      const startPadding = 16;
       const whiteKeyWidth = currentKeyWidth;
       const blackKeyWidth = currentKeyWidth * 0.65;
       
+      let result: { x: number; width: number; isBlack: boolean };
       if (isBlack) {
-        // Black key is positioned between two white keys, offset by 67.5% of the white key
-        // This matches: style={{ transform: 'translateX(-50%)' }} on the black key container
         const x = startPadding + (whiteKeyPosition * whiteKeyWidth) + (whiteKeyWidth * 0.675);
-        return { x, width: blackKeyWidth, isBlack: true };
+        result = { x, width: blackKeyWidth, isBlack: true };
       } else {
         const x = startPadding + (whiteKeyPosition * whiteKeyWidth);
-        return { x, width: whiteKeyWidth, isBlack: false };
+        result = { x, width: whiteKeyWidth, isBlack: false };
       }
+      
+      // OPTIMIZATION: Cache the result
+      notePositionCacheRef.current.set(noteName, result);
+      return result;
     };
     
     // Render each note - notes fall from top (off-screen) toward the bottom (hit line)
     // OPTIMIZATION: Filter events to only visible time window first
     const visibleEvents = midi.events.filter(event => {
       const noteEnd = event.startTime + event.duration;
-      return noteEnd >= currentTime - 0.3 && event.startTime <= currentTime + lookAheadTime;
+      return noteEnd >= currentTime - 0.2 && event.startTime <= currentTime + lookAheadTime;
     });
     
-    // OPTIMIZATION: Limit number of rendered notes to prevent performance issues
-    const maxNotesToRender = 100;
+    // OPTIMIZATION: Stricter limit on mobile
+    const maxNotesToRender = isMobile ? 60 : 100;
     const eventsToRender = visibleEvents.slice(0, maxNotesToRender);
     
+    // OPTIMIZATION: Batch similar colors together to reduce state changes
+    const whiteNotes: typeof eventsToRender = [];
+    const blackNotes: typeof eventsToRender = [];
+    const pendingNotes: typeof eventsToRender = [];
+    
     eventsToRender.forEach(event => {
-      const noteEnd = event.startTime + event.duration;
       const notePos = getNotePosition(event.noteName);
       if (!notePos) return;
       
-      // Use different hit lines for black and white keys
-      const hitLineY = notePos.isBlack ? blackKeyHitLineY : whiteKeyHitLineY;
+      const normalizedEventNote = normalizeNoteName(event.noteName);
+      const isPending = trainingModeEnabledRef.current && 
+                       isPausedMidiRef.current && 
+                       pendingNotesRef.current.has(normalizedEventNote);
       
-      // Calculate Y position
-      // timeUntilNote > 0: note is in the future, should be above the hit line
-      // timeUntilNote < 0: note is being played/has passed, should be at/below hit line
-      const timeUntilNote = event.startTime - currentTime;
-      
-      // Note height based on duration (minimum 6px for visibility, scaled down for more visibility)
-      const noteHeight = Math.max(6, event.duration * pixelsPerSecond * noteHeightScale);
-      
-      // Y position: the BOTTOM of the note bar
-      // When timeUntilNote = 0, the bottom of the note should be at hitLineY
-      // When timeUntilNote = lookAheadTime, the bottom should be at Y = 0 (top of canvas)
-      const noteBottomY = hitLineY - (timeUntilNote * pixelsPerSecond);
-      const noteTopY = noteBottomY - noteHeight;
-      
-      // Adjust X position for scroll offset
-      const x = notePos.x - scrollOffset;
-      
-      // Only draw if visible in viewport (horizontally)
-      if (x + notePos.width > 0 && x < visibleWidth) {
-        // Determine if note is currently playing
-        const isPlaying = currentTime >= event.startTime && currentTime <= noteEnd;
-        
-        // Check if this note is pending in training mode
-        const normalizedEventNote = normalizeNoteName(event.noteName);
-        const isPending = trainingModeEnabledRef.current && 
-                         isPausedMidiRef.current && 
-                         pendingNotesRef.current.has(normalizedEventNote);
-        
-        // Clamp note to visible canvas area
-        const drawY = Math.max(-noteHeight, noteTopY); // Can start slightly above canvas
-        const drawHeight = Math.min(noteBottomY, pianoKeyboardHeight) - Math.max(0, noteTopY);
-        
-        // Skip if completely off-screen
-        if (drawHeight <= 0 || noteBottomY < 0) return;
-        
-        // OPTIMIZATION: Disable shadows for non-playing/non-pending notes (shadows are expensive)
-        // Color based on key type, playing state, and pending state (training mode)
-        if (isPending) {
-          // Pending notes in training mode - highlight with green/yellow
-          ctx.fillStyle = '#22c55e'; // Green for pending notes
-          // Only add glow for pending notes (limited number)
-          ctx.shadowColor = '#22c55e';
-          ctx.shadowBlur = 10;
-        } else if (notePos.isBlack) {
-          ctx.fillStyle = isPlaying ? '#818cf8' : '#4f46e5'; // Brighter when playing
-          ctx.shadowBlur = 0;
-        } else {
-          ctx.fillStyle = isPlaying ? '#a78bfa' : '#7c3aed'; // Purple for white keys
-          ctx.shadowBlur = 0;
-        }
-        
-        // Draw the note bar
-        const padding = 2; // Small padding on sides
-        const radius = Math.min(4, notePos.width / 4);
-        const drawX = x + padding;
-        const drawWidth = notePos.width - padding * 2;
-        const finalY = Math.max(0, noteTopY);
-        
-        ctx.beginPath();
-        ctx.roundRect(drawX, finalY, drawWidth, drawHeight, radius);
-        ctx.fill();
-        
-        // Reset shadow after drawing
-        if (isPending) {
-          ctx.shadowBlur = 0;
-        }
+      if (isPending) {
+        pendingNotes.push(event);
+      } else if (notePos.isBlack) {
+        blackNotes.push(event);
+      } else {
+        whiteNotes.push(event);
       }
     });
+    
+    // OPTIMIZATION: Helper function to render a batch of notes
+    const renderNoteBatch = (events: typeof eventsToRender, color: string, useShadow: boolean) => {
+      if (events.length === 0) return;
+      
+      ctx.fillStyle = color;
+      if (useShadow) {
+        ctx.shadowColor = color;
+        ctx.shadowBlur = 8;
+      } else {
+        ctx.shadowBlur = 0;
+      }
+      
+      events.forEach(event => {
+        const notePos = getNotePosition(event.noteName);
+        if (!notePos) return;
+        
+        const hitLineY = notePos.isBlack ? blackKeyHitLineY : whiteKeyHitLineY;
+        const timeUntilNote = event.startTime - currentTime;
+        const noteEnd = event.startTime + event.duration;
+        const noteHeight = Math.max(5, event.duration * pixelsPerSecond * noteHeightScale);
+        const noteBottomY = hitLineY - (timeUntilNote * pixelsPerSecond);
+        const noteTopY = noteBottomY - noteHeight;
+        const x = notePos.x - scrollOffset;
+        
+        // Only draw if visible in viewport
+        if (x + notePos.width > 0 && x < visibleWidth) {
+          const drawHeight = Math.min(noteBottomY, pianoKeyboardHeight) - Math.max(0, noteTopY);
+          if (drawHeight <= 0 || noteBottomY < 0) return;
+          
+          const padding = 2;
+          const radius = Math.min(3, notePos.width / 4);
+          const drawX = x + padding;
+          const drawWidth = notePos.width - padding * 2;
+          const finalY = Math.max(0, noteTopY);
+          
+          ctx.beginPath();
+          ctx.roundRect(drawX, finalY, drawWidth, drawHeight, radius);
+          ctx.fill();
+        }
+      });
+      
+      // Reset shadow after batch
+      if (useShadow) {
+        ctx.shadowBlur = 0;
+      }
+    };
+    
+    // Render in order: white notes, black notes, pending notes (on top)
+    renderNoteBatch(whiteNotes, '#7c3aed', false);
+    renderNoteBatch(blackNotes, '#4f46e5', false);
+    renderNoteBatch(pendingNotes, '#22c55e', true); // Only pending notes get glow
   };
   
   // Cleanup on unmount
