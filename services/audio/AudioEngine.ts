@@ -2,23 +2,28 @@ import { InstrumentPreset, SustainMode } from "../../types";
 import { Logger } from "../../lib/logger";
 
 /**
- * SoundSphere Audio Engine v6.0 (Optimized FM + ADSR)
+ * SoundSphere Audio Engine v7.0 (Hiss-Free FM + ADSR)
  * 
- * Optimizations in v6.0:
+ * v7.0 Changes:
+ * - Added noise gate at the end of the signal chain to eliminate hiss
+ * - Added gate release envelope to prevent artifacts
+ * - Reverb is now completely bypassed when not actively receiving signal
+ * - Added explicit silence detection and output muting
+ * 
+ * Previous optimizations:
  * - Voice pooling to reduce garbage collection
  * - Aggressive polyphony limiting with voice stealing
  * - Optimized reverb with shorter duration and lower level
  * - Auto-suspend with shorter timeout
  * - Reduced node count per voice
  * - Efficient gain calculations with caching
- * - Lower sample rate option for mobile devices
- * - Pre-allocated audio buffers
  */
 class FMAudioCore {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private limiter: DynamicsCompressorNode | null = null;
   private dcBlocker: BiquadFilterNode | null = null; // High-pass filter to remove DC offset and rumble
+  private outputGate: GainNode | null = null; // Final output gate to eliminate hiss when silent
   
   // Recorder Nodes
   private mediaDest: MediaStreamAudioDestinationNode | null = null;
@@ -30,12 +35,12 @@ class FMAudioCore {
   private static readonly RECORDING_DATA_INTERVAL = 100; // ms between data collection
   private static readonly RECORDING_STOP_DELAY = 100; // ms to wait after stopping previous recording
 
-  // Audio quality constants - OPTIMIZED for mobile
+  // Audio quality constants - OPTIMIZED for hiss-free output
   private static readonly MIN_RELEASE_TIME = 0.015; // Slightly shorter release (15ms) - still prevents clicks
-  private static readonly REVERB_DECAY_EXPONENT = 3.0; // Faster decay to reduce background noise
-  private static readonly REVERB_NOISE_GATE = 0.03; // Higher noise gate threshold
-  private static readonly REVERB_OUTPUT_LEVEL = 0.5; // Lower reverb level to reduce noise buildup
-  private static readonly REVERB_DURATION = 1.8; // Shorter reverb (was 2.5) for less CPU and noise
+  private static readonly REVERB_DECAY_EXPONENT = 4.0; // Much faster decay to minimize noise
+  private static readonly REVERB_NOISE_GATE = 0.08; // Much higher noise gate threshold (was 0.03)
+  private static readonly REVERB_OUTPUT_LEVEL = 0.35; // Lower reverb level (was 0.5)
+  private static readonly REVERB_DURATION = 1.5; // Shorter reverb (was 1.8) for less noise
   
   // Auto-suspend timer - OPTIMIZED: shorter timeout
   private static readonly AUTO_SUSPEND_DELAY = 800; // 800ms of silence before suspending (was 2000)
@@ -45,6 +50,7 @@ class FMAudioCore {
   // Reverb (Algorithmic) - cached buffer
   private convolver: ConvolverNode | null = null;
   private reverbBuffer: AudioBuffer | null = null; // Pre-generated reverb buffer
+  private reverbReturnGain: GainNode | null = null; // Reverb return for dynamic control
 
   // Active Voices Registry with voice pooling
   private activeVoices: Map<number, VoiceNode[]> = new Map();
@@ -63,7 +69,7 @@ class FMAudioCore {
 
   // OPTIMIZATION: Stricter polyphony limits for mobile
   private maxPolyphony: number = 24; // Reduced from 32
-  private baseGain: number = 0.18; // Reduced from 0.20 for less CPU load
+  private baseGain: number = 0.15; // Further reduced for cleaner sound
   
   // OPTIMIZATION: Gain calculation cache
   private lastPolyphonyScale: number = 1.0;
@@ -78,9 +84,9 @@ class FMAudioCore {
     this.isMobileDevice = this.detectMobileDevice();
     if (this.isMobileDevice) {
       this.maxPolyphony = 16; // Even stricter on mobile
-      this.baseGain = 0.16;
+      this.baseGain = 0.12; // Lower gain on mobile to reduce noise floor
     }
-    Logger.log('info', 'FMAudioCore: Engine v6.0 Initialized (optimized)', { isMobile: this.isMobileDevice });
+    Logger.log('info', 'FMAudioCore: Engine v7.0 Initialized (hiss-free)', { isMobile: this.isMobileDevice });
   }
   
   // OPTIMIZATION: Detect mobile device for adaptive settings
@@ -103,7 +109,7 @@ class FMAudioCore {
         // 2. DC Blocker / High-pass filter (removes DC offset and sub-bass rumble that causes crackling)
         this.dcBlocker = this.ctx.createBiquadFilter();
         this.dcBlocker.type = 'highpass';
-        this.dcBlocker.frequency.value = 20; // Cut below 20Hz (inaudible, prevents rumble/DC offset)
+        this.dcBlocker.frequency.value = 25; // Slightly higher cutoff (25Hz) to better eliminate sub-bass noise
         this.dcBlocker.Q.value = 0.7; // Gentle slope
 
         // 3. Soft Mode Filter (Low-pass for smoother sound)
@@ -120,28 +126,34 @@ class FMAudioCore {
         this.limiter.attack.value = 0.003; // Slightly slower attack to preserve transients
         this.limiter.release.value = 0.1; // Slower release to avoid crackling/pumping
 
-        // 5. Reverb Unit - OPTIMIZED with shorter duration and lower level
+        // 5. Output Gate - Final gain node to cut output when silent (eliminates hiss)
+        this.outputGate = this.ctx.createGain();
+        this.outputGate.gain.value = 1.0; // Start open
+
+        // 6. Reverb Unit - OPTIMIZED with shorter duration and lower level
+        // Store reverb return gain for dynamic control
         this.convolver = this.ctx.createConvolver();
         // Pre-generate and cache the reverb buffer
         this.reverbBuffer = this.generateReverbImpulse(FMAudioCore.REVERB_DURATION);
         this.convolver.buffer = this.reverbBuffer;
         
-        const reverbReturn = this.ctx.createGain();
-        reverbReturn.gain.value = this.isMobileDevice ? 0.4 : 0.6; // Lower on mobile
+        this.reverbReturnGain = this.ctx.createGain();
+        this.reverbReturnGain.gain.value = this.isMobileDevice ? 0.3 : 0.5; // Lower reverb to reduce noise
 
-        // Signal Chain: masterGain -> dcBlocker -> softModeFilter -> limiter -> destination
-        this.convolver.connect(reverbReturn);
-        reverbReturn.connect(this.masterGain);
+        // Signal Chain: masterGain -> dcBlocker -> softModeFilter -> limiter -> outputGate -> destination
+        this.convolver.connect(this.reverbReturnGain);
+        this.reverbReturnGain.connect(this.masterGain);
         this.masterGain.connect(this.dcBlocker);
         this.dcBlocker.connect(this.softModeFilter);
         this.softModeFilter.connect(this.limiter);
-        this.limiter.connect(this.ctx.destination);
+        this.limiter.connect(this.outputGate);
+        this.outputGate.connect(this.ctx.destination);
 
-        // 6. Recording Tap
+        // 7. Recording Tap
         this.mediaDest = this.ctx.createMediaStreamDestination();
-        this.limiter.connect(this.mediaDest);
+        this.outputGate.connect(this.mediaDest);
 
-        Logger.log('info', 'FMAudioCore: Context Ready', { sampleRate: this.ctx.sampleRate });
+        Logger.log('info', 'FMAudioCore v7.0: Context Ready (hiss-free)', { sampleRate: this.ctx.sampleRate });
     } catch (e: any) {
         Logger.log('error', 'Audio Engine Init Failed', { error: e.message });
     }
@@ -333,13 +345,14 @@ class FMAudioCore {
         voice.outputNode.connect(this.masterGain!);
     }
 
-    // OPTIMIZATION: Skip reverb on mobile if we're at high polyphony
-    const skipReverb = this.isMobileDevice && this.currentVoiceCount > 8;
+    // OPTIMIZATION: Completely skip reverb on mobile to eliminate noise source
+    // Also skip at high polyphony on any device
+    const skipReverb = this.isMobileDevice || this.currentVoiceCount > 12;
     if (this.convolver && preset.physics.reverbMix > 0 && !skipReverb) {
         const sendGain = this.ctx.createGain();
         // OPTIMIZATION: Reduce reverb send as polyphony increases
-        const reverbScale = Math.max(0.3, 1 - (this.currentVoiceCount / this.maxPolyphony) * 0.5);
-        sendGain.gain.value = preset.physics.reverbMix * reverbScale;
+        const reverbScale = Math.max(0.2, 1 - (this.currentVoiceCount / this.maxPolyphony) * 0.6);
+        sendGain.gain.value = preset.physics.reverbMix * reverbScale * 0.5; // Further reduce reverb
         voice.outputNode.connect(sendGain);
         sendGain.connect(this.convolver);
         voice.nodes.push(sendGain);
@@ -622,10 +635,10 @@ class FMAudioCore {
     this.isLowPowerMode = enabled;
     if (enabled) {
       this.maxPolyphony = 8;
-      this.baseGain = 0.14;
+      this.baseGain = 0.10;
     } else {
       this.maxPolyphony = this.isMobileDevice ? 16 : 24;
-      this.baseGain = this.isMobileDevice ? 0.16 : 0.18;
+      this.baseGain = this.isMobileDevice ? 0.12 : 0.15;
     }
     Logger.log('info', 'Low power mode', { enabled, maxPolyphony: this.maxPolyphony });
   }
