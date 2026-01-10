@@ -225,6 +225,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
   const playMidi = (sequence: SongSequence, fromPosition: number = 0) => {
     stopMidi(); // Stop any current playback
     
+    // Enable MIDI playback mode in audio engine to prevent pop/click between notes
+    AudioEngine.setMidiPlaybackMode(true);
+    
     // Update refs IMMEDIATELY (before state updates) to avoid stale closure issues
     currentMidiRef.current = sequence;
     isPlayingMidiRef.current = true;
@@ -283,6 +286,8 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
         isPlayingMidiRef.current = false;
         isPausedMidiRef.current = false;
         currentMidiRef.current = null;
+        // Disable MIDI playback mode when playback ends naturally
+        AudioEngine.setMidiPlaybackMode(false);
         setIsPlayingMidi(false);
         setIsPausedMidi(false);
         setCurrentMidi(null);
@@ -431,6 +436,9 @@ export const FloatingPiano: React.FC<FloatingPianoProps> = ({
     midiTimeoutRefs.current.forEach(t => clearTimeout(t));
     midiTimeoutRefs.current = [];
     cancelAnimationFrame(midiAnimationRef.current);
+    
+    // Disable MIDI playback mode in audio engine
+    AudioEngine.setMidiPlaybackMode(false);
     
     // Update refs immediately
     isPlayingMidiRef.current = false;

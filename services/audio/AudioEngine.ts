@@ -2,19 +2,22 @@ import { InstrumentPreset, SustainMode } from "../../types";
 import { Logger } from "../../lib/logger";
 
 /**
- * SoundSphere Audio Engine v7.0 (Hiss-Free FM + ADSR)
+ * SoundSphere Audio Engine v8.0 (Anti-Pop FM + ADSR)
  * 
- * v7.0 Changes:
+ * v8.0 Changes:
+ * - Added keep-alive oscillator to prevent speaker pop/click when audio starts/stops
+ * - MIDI playback mode to disable auto-suspend during MIDI playback
+ * - Longer auto-suspend delay for smoother transitions (2500ms)
+ * - Smooth output gate transitions to eliminate sudden silence gaps
+ * 
+ * Previous changes (v7.0):
  * - Added noise gate at the end of the signal chain to eliminate hiss
- * - Added gate release envelope to prevent artifacts
  * - Reverb is now completely bypassed when not actively receiving signal
- * - Added explicit silence detection and output muting
  * 
  * Previous optimizations:
  * - Voice pooling to reduce garbage collection
  * - Aggressive polyphony limiting with voice stealing
  * - Optimized reverb with shorter duration and lower level
- * - Auto-suspend with shorter timeout
  * - Reduced node count per voice
  * - Efficient gain calculations with caching
  */
@@ -24,6 +27,10 @@ class FMAudioCore {
   private limiter: DynamicsCompressorNode | null = null;
   private dcBlocker: BiquadFilterNode | null = null; // High-pass filter to remove DC offset and rumble
   private outputGate: GainNode | null = null; // Final output gate to eliminate hiss when silent
+  
+  // Keep-alive oscillator to prevent speaker pop/click
+  private keepAliveOsc: OscillatorNode | null = null;
+  private keepAliveGain: GainNode | null = null;
   
   // Recorder Nodes
   private mediaDest: MediaStreamAudioDestinationNode | null = null;
@@ -42,10 +49,11 @@ class FMAudioCore {
   private static readonly REVERB_OUTPUT_LEVEL = 0.35; // Lower reverb level (was 0.5)
   private static readonly REVERB_DURATION = 1.5; // Shorter reverb (was 1.8) for less noise
   
-  // Auto-suspend timer - OPTIMIZED: shorter timeout
-  private static readonly AUTO_SUSPEND_DELAY = 800; // 800ms of silence before suspending (was 2000)
+  // Auto-suspend timer - LONGER timeout to prevent pops during MIDI playback
+  private static readonly AUTO_SUSPEND_DELAY = 2500; // 2.5s of silence before suspending (was 800ms)
   private autoSuspendTimeout: ReturnType<typeof setTimeout> | null = null;
   private isRecording: boolean = false; // Track if recording is active
+  private isMidiPlaybackActive: boolean = false; // Track if MIDI playback is active
 
   // Reverb (Algorithmic) - cached buffer
   private convolver: ConvolverNode | null = null;
@@ -86,7 +94,7 @@ class FMAudioCore {
       this.maxPolyphony = 16; // Even stricter on mobile
       this.baseGain = 0.12; // Lower gain on mobile to reduce noise floor
     }
-    Logger.log('info', 'FMAudioCore: Engine v7.0 Initialized (hiss-free)', { isMobile: this.isMobileDevice });
+    Logger.log('info', 'FMAudioCore: Engine v8.0 Initialized (anti-pop)', { isMobile: this.isMobileDevice });
   }
   
   // OPTIMIZATION: Detect mobile device for adaptive settings
@@ -140,6 +148,17 @@ class FMAudioCore {
         this.reverbReturnGain = this.ctx.createGain();
         this.reverbReturnGain.gain.value = this.isMobileDevice ? 0.3 : 0.5; // Lower reverb to reduce noise
 
+        // 6b. Keep-alive oscillator - prevents speaker pop/click when audio starts/stops
+        // This outputs an inaudible DC offset that keeps the audio path active
+        this.keepAliveOsc = this.ctx.createOscillator();
+        this.keepAliveOsc.type = 'sine';
+        this.keepAliveOsc.frequency.value = 1; // 1Hz - completely inaudible
+        this.keepAliveGain = this.ctx.createGain();
+        this.keepAliveGain.gain.value = 0.0001; // Extremely low - inaudible but keeps speaker active
+        this.keepAliveOsc.connect(this.keepAliveGain);
+        this.keepAliveGain.connect(this.masterGain);
+        this.keepAliveOsc.start();
+
         // Signal Chain: masterGain -> dcBlocker -> softModeFilter -> limiter -> outputGate -> destination
         this.convolver.connect(this.reverbReturnGain);
         this.reverbReturnGain.connect(this.masterGain);
@@ -153,7 +172,7 @@ class FMAudioCore {
         this.mediaDest = this.ctx.createMediaStreamDestination();
         this.outputGate.connect(this.mediaDest);
 
-        Logger.log('info', 'FMAudioCore v7.0: Context Ready (hiss-free)', { sampleRate: this.ctx.sampleRate });
+        Logger.log('info', 'FMAudioCore v8.0: Context Ready (anti-pop)', { sampleRate: this.ctx.sampleRate });
     } catch (e: any) {
         Logger.log('error', 'Audio Engine Init Failed', { error: e.message });
     }
@@ -505,24 +524,26 @@ class FMAudioCore {
     this.currentVoiceCount = Math.max(0, this.currentVoiceCount - voices.length);
     this.activeVoices.delete(freq);
     
-    // Schedule auto-suspend check after note is released
-    this.scheduleAutoSuspend();
+    // Schedule auto-suspend check after note is released (only if not in MIDI playback)
+    if (!this.isMidiPlaybackActive) {
+      this.scheduleAutoSuspend();
+    }
   }
   
   // Auto-suspend AudioContext when idle to prevent background hiss from phone speakers
   private scheduleAutoSuspend() {
-    // Don't suspend if recording is active
-    if (this.isRecording) return;
+    // Don't suspend if recording or MIDI playback is active
+    if (this.isRecording || this.isMidiPlaybackActive) return;
     
     // Clear any existing timeout
     if (this.autoSuspendTimeout) {
       clearTimeout(this.autoSuspendTimeout);
     }
     
-    // Schedule suspend check - OPTIMIZATION: shorter timeout
+    // Schedule suspend check - longer timeout for smoother experience
     this.autoSuspendTimeout = setTimeout(() => {
-      // Only suspend if no active voices and not recording
-      if (this.currentVoiceCount === 0 && !this.isRecording && this.ctx && this.ctx.state === 'running') {
+      // Only suspend if no active voices, not recording, and not in MIDI playback
+      if (this.currentVoiceCount === 0 && !this.isRecording && !this.isMidiPlaybackActive && this.ctx && this.ctx.state === 'running') {
         this.ctx.suspend().then(() => {
           Logger.log('info', 'AudioContext auto-suspended (idle)');
         }).catch(() => {
@@ -531,6 +552,31 @@ class FMAudioCore {
       }
       this.autoSuspendTimeout = null;
     }, FMAudioCore.AUTO_SUSPEND_DELAY);
+  }
+  
+  /**
+   * Enable/disable MIDI playback mode.
+   * When enabled, prevents auto-suspend to avoid pop/click between notes.
+   */
+  public setMidiPlaybackMode(active: boolean) {
+    this.isMidiPlaybackActive = active;
+    
+    if (active) {
+      // Cancel any pending auto-suspend
+      if (this.autoSuspendTimeout) {
+        clearTimeout(this.autoSuspendTimeout);
+        this.autoSuspendTimeout = null;
+      }
+      // Resume context if suspended
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume();
+      }
+      Logger.log('info', 'MIDI playback mode enabled');
+    } else {
+      // Schedule auto-suspend when MIDI playback ends
+      this.scheduleAutoSuspend();
+      Logger.log('info', 'MIDI playback mode disabled');
+    }
   }
 
   public resume() {
